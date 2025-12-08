@@ -1,0 +1,49 @@
+﻿using IGX.Geometry.Common;
+using IGX.Geometry.ConvexHull;
+using IGX.Geometry.DataStructure;
+using IGX.Geometry.Tessellation;
+using OpenTK.Mathematics;
+using System.Collections.Generic;
+using OpenTK.Graphics.OpenGL4;
+
+namespace IGX.Geometry.GeometryBuilder
+{
+    public class Pyramid : PrimitiveBase
+    {
+        public float Xbottom;
+        public float Ybottom;
+        public float Xtop;
+        public float Ytop;
+        public float Xoffset;
+        public float Yoffset;
+        public float Height;
+
+        public int GeometryID { get => InstanceData.GeometryID; set => InstanceData.GeometryID = value; }
+        public Pyramid(Matrix4 matrix, AABB3 bBoxLocal, float bx = 1f, float by = 1f, float tx = 1f, float ty = 1f, float ox = 0f, float oy = 0f, float h = 1f)
+        {
+            Xbottom = bx;
+            Ybottom = by;
+            Xtop = tx;
+            Ytop = ty;
+            Xoffset = ox;
+            Yoffset = oy;
+            Height = h;
+        }
+
+        public override (List<Vector3> positions, List<Vector3> normals, List<uint> indices) Tessellate(uint n_seg, bool bBcap = true, bool bTcap = true)
+        {
+            (Points, Normals, Indices)
+                = TessellationUtility.SixFacetsVolume(Xbottom, Ybottom, Xtop, Ytop, Xoffset, Yoffset, Height);
+
+            if (Points != null && Normals != null)
+            {
+                (List<Vector3> Positions, List<Vector3> Normals) res = TessellationUtility.MatrixApply(
+                    InstanceData.Model, Points, Normals);
+                Points = res.Positions;
+                Normals = res.Normals;
+            }
+
+            return (Points!, Normals!, Indices);
+        }
+    }
+}

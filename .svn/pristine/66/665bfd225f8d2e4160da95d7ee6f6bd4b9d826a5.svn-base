@@ -1,0 +1,435 @@
+﻿//using IGX.Geometry.Common;
+//using IGX.Geometry.ConvexHull;
+//using IGX.ViewControl.Buffer;
+//using IGX.ViewControl.Render.Materials;
+//using OpenTK.Graphics.OpenGL4;
+//using OpenTK.Mathematics;
+//using OpenTK.Windowing.GraphicsLibraryFramework;
+//using System;
+//using System.Linq;
+
+//namespace IGX.ViewControl.Render
+//{
+//    /// <summary>
+//    /// Represents the different modes of clipping.
+//    /// </summary>
+//    public enum ClipMode
+//    {
+//        None = 0,
+//        SinglePlane = 1,
+//        Box = 2,
+//        Section = 3
+//    }
+
+//    /// <summary>
+//    /// A renderer for a 3D clipping box gizmo. This class handles the rendering of the interactive box,
+//    /// user input for manipulating it, and applying the clipping planes to a _shader for culling geometry.
+//    /// </summary>
+//    public class ClipPlanwSystem : IDisposable
+//    {
+//        public bool Enabled { get; set; } = true;
+//        public bool ShowBox { get; set; } = true;
+//        public ClipMode Mode { get; set; } = ClipMode.Box;
+//        public ClippingBox ClipBoxData { get; private set; }
+
+//        private int _clipVao;
+//        private VertexBuffer<Vector3>? _clipVbo;
+//        private IndexBuffer? _clipEbo;
+//        private readonly Shader _gizmoShader;
+//        private const float GizmoHandleSize = 0.1f;
+//        private const int LineIndicesCount = 24;
+//        private const int CornerVerticesCount = 8;
+
+//        private int _selectedHandle = -1;
+//        private Vector3 _dragStartPos;
+//        private bool _isDragging = false;
+//        private bool _needsBufferUpdate = true;
+
+//        private bool disposedValue = false;
+
+//        /// <summary>
+//        /// Initializes a new instance of the <see cref="ClipPlanwSystem"/> class.
+//        /// </summary>
+//        /// <param name="cb">An optional existing ClippingBox to use. If null, a new one is created.</param>
+//        public ClipPlanwSystem(ClippingBox? cb = null)
+//        {
+//            ClipBoxData = cb ?? new ClippingBox();
+
+//            if (cb == null)
+//            {
+//                ClipBoxData.ResetBox(AABB3.UnitBox);
+//            }
+
+//            _gizmoShader = new Shader(GizmoVertex, GizmoFragment, isFilePath: false);
+//            SetupClipBoxBuffers();
+//        }
+
+//        // Indices for Drawing a wireframe cube.
+//        uint[] indices =
+//        [
+//            0, 1, 1, 3, 3, 2, 2, 0,
+//            4, 5, 5, 7, 7, 6, 6, 4,
+//            0, 4, 1, 5, 2, 6, 3, 7
+//        ];
+
+//        /// <summary>
+//        /// Sets up the OpenGL vertex and index buffers for the clipping box.
+//        /// </summary>
+//        private void SetupClipBoxBuffers()
+//        {
+//            Vector3[] initialCorners = ClipBoxData.GetClipBoxCorners();
+
+//            _clipVao = GL.GenVertexArray();
+//            GL.BindVertexArray(_clipVao);
+
+//            _clipVbo = new VertexBuffer<Vector3>(initialCorners, BufferUsageHint.DynamicDraw, BufferTarget.ArrayBuffer);
+//            _clipVbo.Bind();
+//            GL.VertexAttribPointer(0, 3, VertexAttribPointerType.Float, false, 3 * sizeof(float), 0);
+//            GL.EnableVertexAttribArray(0);
+
+//            _clipEbo = new IndexBuffer(indices, BufferUsageHint.DynamicDraw, true);
+//            _clipEbo.Bind();
+
+//            GL.BindVertexArray(0);
+//            _clipVbo.Unbind();
+//            _clipEbo.Unbind();
+//        }
+
+//        /// <summary>
+//        /// Resets the clipping box to a new a box centered at a position with a given radius.
+//        /// </summary>
+//        public void ResetBox(Vector3 center, float radius)
+//        {
+//            ClipBoxData.ResetBox(center, radius);
+//            _needsBufferUpdate = true;
+//        }
+
+//        /// <summary>
+//        /// Resets the clipping box to a new axis-aligned bounding box.
+//        /// </summary>
+//        public void ResetBox(AABB3 box)
+//        {
+//            ClipBoxData.ResetBox(box);
+//            _needsBufferUpdate = true;
+//        }
+
+//        /// <summary>
+//        /// Resets the clipping box to a new oriented bounding box.
+//        /// </summary>
+//        public void ResetBox(OOBB3 box)
+//        {
+//            ClipBoxData.ResetBox(box);
+//            _needsBufferUpdate = true;
+//        }
+
+//        /// <summary>
+//        /// Updates the vertex _instancedBuffer with the current corner positions of the clipping box if a change is needed.
+//        /// </summary>
+//        private void UpdateClipBoxBuffers()
+//        {
+//            if (_needsBufferUpdate)
+//            {
+//                Vector3[] updatedCorners = ClipBoxData.GetClipBoxCorners();
+//                _clipVbo?.UpdateData(updatedCorners, 0);
+//                _needsBufferUpdate = false;
+//            }
+//        }
+
+//        /// <summary>
+//        /// Handles user interaction for dragging the clipping box.
+//        /// </summary>
+//        /// <param name="camera">The camera object providing view and projection matrices.</param>
+//        /// <param name="mouse">The current mouse state.</param>
+//        public void UpdateData(IMyCamera camera, MouseState mouse)
+//        {
+//            if (!Enabled || Mode != ClipMode.Box)
+//            {
+//                return;
+//            }
+
+//            Ray3f mouseRay = CalculateRay(camera, mouse.Position);
+
+//            if (mouse.IsButtonDown(MouseButton.Left))
+//            {
+//                if (!_isDragging)
+//                {
+//                    _selectedHandle = PickGizmo(mouseRay);
+//                    if (_selectedHandle != -1)
+//                    {
+//                        // Get the handle's position from ClippingBox.
+//                        Vector3 handlePos = ClipBoxData.GetHandlePosition(_selectedHandle);
+//                        Plane3f dragPlane = new(camera.Position - camera.BufferTarget, handlePos);
+//                        if (mouseRay.IntersectRayPlane(dragPlane, out _dragStartPos))
+//                        {
+//                            _isDragging = true;
+//                        }
+//                    }
+//                }
+//                else // During drag
+//                {
+//                    Plane3f dragPlane = new(camera.Position - camera.BufferTarget, _dragStartPos);
+//                    if (mouseRay.IntersectRayPlane(dragPlane, out Vector3 currentPos))
+//                    {
+//                        Vector3 delta = currentPos - _dragStartPos;
+//                        ClipBoxData.UpdatePlanes(_selectedHandle, delta);
+//                        _dragStartPos = currentPos;
+//                        _needsBufferUpdate = true;
+//                    }
+//                }
+//            }
+//            else // Drag finished
+//            {
+//                _isDragging = false;
+//                _selectedHandle = -1;
+//            }
+//        }
+
+//        /// <summary>
+//        /// Calculates a ray from the camera position through the given mouse position on the screen.
+//        /// </summary>
+//        private Ray3f CalculateRay(IMyCamera camera, Vector2 mousePosition)
+//        {
+//            Vector2 viewportSize = new(camera.ViewportWidth, camera.ViewportHeight);
+//            var view = camera.ViewMatrix;
+//            var projection = camera.ProjectionMatrix;
+
+//            float x = ((2.0f * mousePosition.X) / viewportSize.X) - 1.0f;
+//            float y = 1.0f - ((2.0f * mousePosition.Y) / viewportSize.Y);
+
+//            Vector4 clipCoord = new(x, y, -1.0f, 1.0f);
+
+//            Matrix4 invProjection = Matrix4.Invert(projection);
+//            Vector4 eyeCoord = invProjection * clipCoord;
+//            eyeCoord.Z = -1.0f;
+//            eyeCoord.W = 0.0f;
+
+//            Matrix4 invView = Matrix4.Invert(view);
+//            Vector3 rayDirection = Vector3.TransformVector(eyeCoord.Xyz, invView).Normalized();
+
+//            return new Ray3f(camera.Position, rayDirection);
+//        }
+
+//        /// <summary>
+//        /// Performs ray-casting to determine which part of the gizmo (corner, edge, or face) is selected.
+//        /// </summary>
+//        /// <param name="ray">The ray from the mouse position.</param>
+//        /// <returns>An integer representing the selected handle, or -1 if none is selected.</returns>
+//        private int PickGizmo(Ray3f ray)
+//        {
+//            Vector3[] corners = ClipBoxData.GetClipBoxCorners();
+
+//            // Corner (Sphere) intersection test
+//            for (int i = 0; i < corners.Length; i++)
+//            {
+//                if (ray.IntersectsSphere(corners[i], GizmoHandleSize, out _))
+//                {
+//                    return 18 + i;
+//                }
+//            }
+
+//            // Edge intersection test
+//            for (int i = 0; i < indices.Length / 2; i++)
+//            {
+//                Vector3 start = corners[indices[i * 2]];
+//                Vector3 end = corners[indices[(i * 2) + 1]];
+//                float dist = ray.DistanceToLineSegment(new Segment3f(start, end));
+//                if (dist < GizmoHandleSize)
+//                {
+//                    return 6 + i;
+//                }
+//            }
+
+//            // Face (Plane) intersection test
+//            for (int i = 0; i < 6; i++)
+//            {
+//                Plane3f p = new(ClipBoxData.ClipPlanes[i].Xyz, ClipBoxData.ClipPlanes[i].W);
+//                if (ray.IntersectRayPlane(p, out Vector3 intersectionPoint))
+//                {
+//                    if (IsPointOnBoxFace(intersectionPoint, i))
+//                    {
+//                        return i;
+//                    }
+//                }
+//            }
+//            return -1;
+//        }
+
+//        /// <summary>
+//        /// Checks if a point lies on one of the faces of the clipping box within a given tolerance.
+//        /// </summary>
+//        private bool IsPointOnBoxFace(Vector3 point, int planeIndex)
+//        {
+//            Vector3[] corners = ClipBoxData.GetClipBoxCorners();
+//            Vector3 min = corners.Aggregate(corners[0], Vector3.ComponentMin);
+//            Vector3 max = corners.Aggregate(corners[0], Vector3.ComponentMax);
+
+//            const float tolerance = 0.01f;
+
+//            switch (planeIndex)
+//            {
+//                case 0: // +X face
+//                    return Math.Abs(point.X - max.X) < tolerance &&
+//                           point.Y >= min.Y - tolerance && point.Y <= max.Y + tolerance &&
+//                           point.Z >= min.Z - tolerance && point.Z <= max.Z + tolerance;
+//                case 1: // -X face
+//                    return Math.Abs(point.X - min.X) < tolerance &&
+//                           point.Y >= min.Y - tolerance && point.Y <= max.Y + tolerance &&
+//                           point.Z >= min.Z - tolerance && point.Z <= max.Z + tolerance;
+//                case 2: // +Y face
+//                    return Math.Abs(point.Y - max.Y) < tolerance &&
+//                           point.X >= min.X - tolerance && point.X <= max.X + tolerance &&
+//                           point.Z >= min.Z - tolerance && point.Z <= max.Z + tolerance;
+//                case 3: // -Y face
+//                    return Math.Abs(point.Y - min.Y) < tolerance &&
+//                           point.X >= min.X - tolerance && point.X <= max.X + tolerance &&
+//                           point.Z >= min.Z - tolerance && point.Z <= max.Z + tolerance;
+//                case 4: // +Z face
+//                    return Math.Abs(point.Z - max.Z) < tolerance &&
+//                           point.X >= min.X - tolerance && point.X <= max.X + tolerance &&
+//                           point.Y >= min.Y - tolerance && point.Y <= max.Y + tolerance;
+//                case 5: // -Z face
+//                    return Math.Abs(point.Z - min.Z) < tolerance &&
+//                           point.X >= min.X - tolerance && point.X <= max.X + tolerance &&
+//                           point.Y >= min.Y - tolerance && point.Y <= max.Y + tolerance;
+//            }
+//            return false;
+//        }
+
+//        /// <summary>
+//        /// Draws the clipping box gizmo on the screen.
+//        /// </summary>
+//        /// <param name="camera">The camera used for rendering.</param>
+//        public void Render(IMyCamera camera)
+//        {
+//            Matrix4 view = camera.ViewMatrix;
+//            Matrix4 projection = camera.ProjectionMatrix;
+//            if (!ShowBox || Mode != ClipMode.Box)
+//            {
+//                return;
+//            }
+
+//            UpdateClipBoxBuffers();
+
+//            GL.Enable(EnableCap.LineSmooth);
+//            GL.Enable(EnableCap.ProgramPointSize);
+
+//            using (_gizmoShader.Use())
+//            {
+//                _gizmoShader.SetUniformIfExist("view", view);
+//                _gizmoShader.SetUniformIfExist("projection", projection);
+
+//                GL.BindVertexArray(_clipVao);
+
+//                GL.Enable(EnableCap.DepthTest);
+//                // Render the green wireframe lines
+//                _gizmoShader.SetUniformIfExist("u_Color", new Vector4(0.0f, 1.0f, 0.0f, 1.0f));
+//                GL.DrawElements(GeomType.Lines, LineIndicesCount, DrawElementsType.UnsignedInt, 0);
+
+//                // Render the red corner points
+//                GL.PointSize(10.0f);
+//                _gizmoShader.SetUniformIfExist("u_Color", new Vector4(1.0f, 0.0f, 0.0f, 1.0f));
+//                GL.DrawArrays(GeomType.Points, 0, CornerVerticesCount);
+
+//                GL.BindVertexArray(0);
+//            }
+//            GL.Disable(EnableCap.LineSmooth);
+//            GL.Disable(EnableCap.ProgramPointSize);
+//        }
+
+//        /// <summary>
+//        /// Applies the clipping parameters (mode and planes) to an external _shader.
+//        /// </summary>
+//        /// <param name="shaderHandle">The OpenGL handle of the target _shader.</param>
+//        public void ApplyToShader(int shaderHandle)
+//        {
+//            if (!Enabled)
+//            {
+//                return;
+//            }
+
+//            int modeLoc = GL.GetUniformLocation(shaderHandle, "u_ClipMode");
+//            int planeLoc = GL.GetUniformLocation(shaderHandle, "u_ClipPlanes");
+
+//            GL.Uniform1(modeLoc, (int)Mode);
+//            if (Mode != ClipMode.None)
+//            {
+//                GL.Uniform4(planeLoc, ClipBoxData.ClipPlanes.Length, ref ClipBoxData.ClipPlanes[0].X);
+//            }
+//        }
+
+//        /// <summary>
+//        /// A string containing the GLSL code for clipping, intended to be included in other shaders.
+//        /// </summary>
+//        public static string ClippingShaderHeader = @"
+//            uniform int u_ClipMode;
+//            uniform vec4 u_ClipPlanes[6];
+//            bool IsClipped(vec3 worldPos)
+//            {
+//                if (u_ClipMode == 0) return false;
+//                if (u_ClipMode == 1)
+//                {
+//                    return dot(vec4(worldPos, 1.0), u_ClipPlanes[0]) < 0.0;
+//                }
+//                if (u_ClipMode == 2)
+//                {
+//                    for (int i = 0; i < 6; i++)
+//                    {
+//                        if (dot(vec4(worldPos, 1.0), u_ClipPlanes[i]) < 0.0)
+//                            return true;
+//                    }
+//                }
+//                return false;
+//            }
+//        ";
+
+//        /// <summary>
+//        /// The vertex _shader for rendering the gizmo.
+//        /// </summary>
+//        public static string GizmoVertex = @"
+//            #version 460 core
+//            layout (location = 0) in vec3 aPos;
+//            uniform mat4 view;
+//            uniform mat4 projection;
+//            out vec3 WorldPos;
+//            void main()
+//            {
+//                gl_Position = projection * view * vec4(aPos, 1.0);
+//                WorldPos = aPos;
+//            }
+//        ";
+
+//        /// <summary>
+//        /// The fragment _shader for rendering the gizmo.
+//        /// </summary>
+//        public static string GizmoFragment = @"
+//            #version 460 core
+//            out vec4 FragColor;
+//            uniform vec4 u_Color;
+//            void main()
+//            {
+//                FragColor = u_Color;
+//            }
+//        ";
+
+//        protected virtual void Dispose(bool disposing)
+//        {
+//            if (!disposedValue)
+//            {
+//                if (disposing)
+//                {
+//                    _gizmoShader?.Dispose();
+//                }
+//                _clipEbo?.Dispose();
+//                _clipVbo?.Dispose();
+//                GL.DeleteVertexArray(_clipVao);
+//                disposedValue = true;
+//            }
+//        }
+
+//        public void Dispose()
+//        {
+//            Dispose(true);
+//            GC.SuppressFinalize(this);
+//        }
+//    }
+//}

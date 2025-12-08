@@ -1,0 +1,86 @@
+﻿using System;
+using OpenTK.Mathematics;
+using IGX.Geometry.Common;
+
+namespace IGX.Geometry.Distance
+{
+    public class DistanceLine3Seg3
+    {
+        Line3f line;
+        Segment3f segment;
+
+        public DistanceLine3Seg3(Line3f line, Segment3f seg)
+        {
+            segment = seg;
+            this.line = line;
+            Compute();
+        }
+
+        public Result3f Compute()
+        {
+            Result3f result = new();
+            Vector3 df = line.origin - segment.center;
+            //float ld_Dot_sd = -Vector3.Dot(line.direction, default_nsegs.direction);
+            //float df_Dot_ld = Vector3.Dot(df, line.direction);
+            float ld_Dot_sd = -line.direction.Dot(segment.direction);
+            float df_Dot_ld = df.Dot(line.direction);
+            float df_MagSqr = df.LengthSquared;
+            float det = Math.Abs(1 - (ld_Dot_sd * ld_Dot_sd));
+            float b1, s0, s1, sqrDist, extDet;
+
+            if (det >= MathUtil.ZeroTolerance)
+            {
+                //b1 = -Vector3.Dot(df, default_nsegs.direction);
+                b1 = -df.Dot(segment.direction);
+
+                s1 = (ld_Dot_sd * df_Dot_ld) - b1;
+                extDet = segment.Extent * det;
+
+                if (s1 >= -extDet)
+                {
+                    if (s1 <= extDet)
+                    {
+                        float invDet = 1 / det;
+                        s0 = ((ld_Dot_sd * b1) - df_Dot_ld) * invDet;
+                        s1 *= invDet;
+                        sqrDist = (s0 * (s0 + (ld_Dot_sd * s1) + (2 * df_Dot_ld))) +
+                            (s1 * ((ld_Dot_sd * s0) + s1 + (2 * b1))) + df_MagSqr;
+                    }
+                    else
+                    {
+                        s1 = segment.Extent;
+                        s0 = -((ld_Dot_sd * s1) + df_Dot_ld);
+                        sqrDist = (-s0 * s0) + (s1 * (s1 + (2 * b1))) + df_MagSqr;
+                    }
+                }
+                else
+                {
+                    s1 = -segment.Extent;
+                    s0 = -((ld_Dot_sd * s1) + df_Dot_ld);
+                    sqrDist = (-s0 * s0) + (s1 * (s1 + (2 * b1))) + df_MagSqr;
+                }
+            }
+            else
+            {
+                s1 = 0;
+                s0 = -df_Dot_ld;
+                sqrDist = (df_Dot_ld * s0) + df_MagSqr;
+            }
+
+            result.closest[0] = line.origin + (s0 * line.direction);
+            result.closest[1] = segment.center + (s1 * segment.direction);
+            result.parameter[0] = s0;
+            result.parameter2[1] = s1;
+
+            if (sqrDist < 0)
+            {
+                sqrDist = 0;
+            }
+
+            result.sqrDistance = sqrDist;
+            result.distance = (float)Math.Sqrt(result.sqrDistance);
+
+            return result;
+        }
+    }
+}

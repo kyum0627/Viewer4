@@ -1,0 +1,191 @@
+﻿//using OpenTK.Mathematics;
+//using System;
+//using System.Collections.Generic;
+
+//namespace IGX.Geometry.Curves
+//{
+//    public static class TubeMeshBuilder
+//    {
+//        /// <summary>
+//        /// CurveBase를 따라 튜브(mesh) 생성 (LineString 최적화 포함, twist 최소화)
+//        /// </summary>
+//        public static (List<Vector3> vertices, List<Vector3> normals, List<uint> indices)
+//            BuildTubeMeshOptimized(CurveBase curve, float radius = 0.1f, uint circleSegments = 12, bool bCap = true)
+//        {
+//            if (curve.Points == null || curve.Points.Count < 2)
+//                return (new List<Vector3>(), new List<Vector3>(), new List<uint>());
+
+//            var vertices = new List<Vector3>();
+//            var normals = new List<Vector3>();
+//            var indices = new List<uint>();
+
+//            uint pointCount = (uint)curve.Points.Count;
+//            Vector3 up = Vector3.UnitZ;
+
+//            Vector3 prevNormal = Vector3.Cross(up, (curve.Points[1] - curve.Points[0]).Normalized());
+//            if (prevNormal.LengthSquared < 1e-6f) prevNormal = Vector3.UnitX;
+//            prevNormal.Normalize();
+
+//            for (int i = 0; i < pointCount; i++)
+//            {
+//                Vector3 tangent;
+//                if (i == 0)
+//                    tangent = (curve.Points[1] - curve.Points[0]).Normalized();
+//                else if (i == pointCount - 1)
+//                    tangent = (curve.Points[^1] - curve.Points[^2]).Normalized();
+//                else
+//                    tangent = (curve.Points[i + 1] - curve.Points[i - 1]).Normalized();
+
+//                // Parallel Transport Normal
+//                Vector3 proj = prevNormal - Vector3.Dot(prevNormal, tangent) * tangent;
+//                Vector3 normal0 = proj.LengthSquared > 1e-6f ? proj.Normalized() : prevNormal;
+//                Vector3 binormal0 = Vector3.Cross(tangent, normal0).Normalized();
+//                prevNormal = normal0;
+
+//                for (uint j = 0; j < circleSegments; j++)
+//                {
+//                    float theta = j / (float)circleSegments * MathF.Tau;
+//                    Vector3 offset = normal0 * MathF.Cos(theta) * radius + binormal0 * MathF.Sin(theta) * radius;
+//                    vertices.Add(curve.Points[i] + offset);
+//                    normals.Add(offset.Normalized());
+//                }
+//            }
+
+//            // Tube sides
+//            for (uint i = 0; i < pointCount - 1; i++)
+//            {
+//                uint start0 = i * circleSegments;
+//                uint start1 = (i + 1) * circleSegments;
+//                for (uint j = 0; j < circleSegments; j++)
+//                {
+//                    uint next = (j + 1) % circleSegments;
+//                    indices.Add(start0 + j);
+//                    indices.Add(start1 + j);
+//                    indices.Add(start1 + next);
+
+//                    indices.Add(start0 + j);
+//                    indices.Add(start1 + next);
+//                    indices.Add(start0 + next);
+//                }
+//            }
+
+//            // Caps
+//            if (bCap)
+//            {
+//                // Start Cap
+//                uint startCenter = (uint)vertices.Count;
+//                vertices.Add(curve.Points[0]);
+//                normals.Add(-(curve.Points[1] - curve.Points[0]).Normalized());
+//                for (uint j = 0; j < circleSegments; j++)
+//                {
+//                    uint next = (j + 1) % circleSegments;
+//                    indices.Add(startCenter);
+//                    indices.Add(next);
+//                    indices.Add(j);
+//                }
+
+//                // End Cap
+//                uint endCenter = (uint)vertices.Count;
+//                vertices.Add(curve.Points[^1]);
+//                normals.Add((curve.Points[^1] - curve.Points[^2]).Normalized());
+//                uint endOffset = (pointCount - 1) * circleSegments;
+//                for (uint j = 0; j < circleSegments; j++)
+//                {
+//                    uint next = (j + 1) % circleSegments;
+//                    indices.Add(endCenter);
+//                    indices.Add(endOffset + j);
+//                    indices.Add(endOffset + next);
+//                }
+//            }
+
+//            return (vertices, normals, indices);
+//        }
+
+//        /// <summary>
+//        /// LineString 전용, 세그먼트별 실린더 방식
+//        /// </summary>
+//        public static (List<Vector3> vertices, List<Vector3> normals, List<int> indices)
+//            BuildLineStringTube(List<Vector3> points, float radius = 0.1f, int circleSegments = 12, bool bCap = true)
+//        {
+//            var vertices = new List<Vector3>();
+//            var normals = new List<Vector3>();
+//            var indices = new List<int>();
+
+//            Vector3 up = Vector3.UnitZ;
+//            int vertexOffset = 0;
+
+//            for (int i = 0; i < points.Count - 1; i++)
+//            {
+//                Vector3 p0 = points[i];
+//                Vector3 p1 = points[i + 1];
+//                Vector3 tangent = (p1 - p0).Normalized();
+//                Vector3 normal0 = Vector3.Cross(tangent, up).LengthSquared > 1e-6 ? Vector3.Cross(tangent, up).Normalized() : Vector3.UnitX;
+//                Vector3 binormal0 = Vector3.Cross(tangent, normal0).Normalized();
+
+//                for (int j = 0; j < circleSegments; j++)
+//                {
+//                    float theta = j / (float)circleSegments * MathF.Tau;
+//                    Vector3 offset = normal0 * MathF.Cos(theta) * radius + binormal0 * MathF.Sin(theta) * radius;
+//                    vertices.Add(p0 + offset);
+//                    normals.Add(offset.Normalized());
+//                }
+//                for (int j = 0; j < circleSegments; j++)
+//                {
+//                    float theta = j / (float)circleSegments * MathF.Tau;
+//                    Vector3 offset = normal0 * MathF.Cos(theta) * radius + binormal0 * MathF.Sin(theta) * radius;
+//                    vertices.Add(p1 + offset);
+//                    normals.Add(offset.Normalized());
+//                }
+
+//                for (int j = 0; j < circleSegments; j++)
+//                {
+//                    int next = (j + 1) % circleSegments;
+//                    int start0 = vertexOffset + j;
+//                    int start1 = vertexOffset + circleSegments + j;
+//                    int end0 = vertexOffset + next;
+//                    int end1 = vertexOffset + circleSegments + next;
+
+//                    indices.Add(start0);
+//                    indices.Add(start1);
+//                    indices.Add(end1);
+
+//                    indices.Add(start0);
+//                    indices.Add(end1);
+//                    indices.Add(end0);
+//                }
+
+//                vertexOffset += 2 * circleSegments;
+//            }
+
+//            if (bCap)
+//            {
+//                // Start Cap
+//                int startCenter = vertices.Count;
+//                vertices.Add(points[0]);
+//                normals.Add(-(points[1] - points[0]).Normalized());
+//                for (int j = 0; j < circleSegments; j++)
+//                {
+//                    int next = (j + 1) % circleSegments;
+//                    indices.Add(startCenter);
+//                    indices.Add(next);
+//                    indices.Add(j);
+//                }
+
+//                // End Cap
+//                int endCenter = vertices.Count;
+//                vertices.Add(points[^1]);
+//                normals.Add((points[^1] - points[^2]).Normalized());
+//                int endOffset = vertices.Count - circleSegments - 1;
+//                for (int j = 0; j < circleSegments; j++)
+//                {
+//                    int next = (j + 1) % circleSegments;
+//                    indices.Add(endCenter);
+//                    indices.Add(endOffset + j);
+//                    indices.Add(endOffset + next);
+//                }
+//            }
+
+//            return (vertices, normals, indices);
+//        }
+//    }
+//}

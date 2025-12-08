@@ -1,0 +1,173 @@
+﻿using MathNet.Numerics.LinearAlgebra;
+using MathNet.Numerics.LinearAlgebra.Double;
+using OpenTK.Mathematics;
+using System;
+using System.Collections.Generic;
+using System.Linq;
+
+namespace IGX.Geometry.Common
+{
+    public static class MatrixExtensions
+    {
+        public static Matrix4 CalculateTRmatrix(this Matrix4 m, Vector3 from, Vector3 to)
+        {
+            Vector3 direction = (to - from);
+            float length = direction.Length;
+            if (length == 0) { return Matrix4.Identity; } // 길이가 0인 경우 처리
+            Vector3 normalizedDirection = direction.Normalized();
+            Vector3 defaultAxis = Vector3.UnitZ;
+            Quaternion rotation = MathUtil.RotationQuaternionFromTwoVectors(defaultAxis, normalizedDirection);
+            Matrix4 mm = Matrix4.CreateFromQuaternion(rotation);
+            Vector3 center = (to + from) / 2.0f;
+            mm *= Matrix4.CreateTranslation(center);
+            return mm;
+        }
+        public static bool IsDecomposable(this Matrix4 m, out Vector3 scale, out Quaternion rotation, out Vector3 translation)
+        {
+            scale = Vector3.Zero;
+            rotation = Quaternion.Identity;
+            translation = Vector3.Zero;
+            return m.AsEnumerableRowMajor().All(MathUtil.IsFinite) && m.DecomposeMatrix(out scale, out rotation, out translation);
+        }
+        public static Matrix ToDenseMatrix(this Matrix4 mat)
+        {
+            return DenseMatrix.OfArray(
+                new double[,]
+                {
+                { mat.M11, mat.M12, mat.M13, mat.M14 },
+                { mat.M21, mat.M22, mat.M23, mat.M24 },
+                { mat.M31, mat.M32, mat.M33, mat.M34 },
+                { mat.M41, mat.M42, mat.M43, mat.M44 }
+                }
+            );
+        }
+        public static IEnumerable<float> AsEnumerableRowMajor(this Matrix4 m)
+        {
+            yield return m.M11;
+            yield return m.M12;
+            yield return m.M13;
+            yield return m.M14;
+            yield return m.M21;
+            yield return m.M22;
+            yield return m.M23;
+            yield return m.M24;
+            yield return m.M31;
+            yield return m.M32;
+            yield return m.M33;
+            yield return m.M34;
+            yield return m.M41;
+            yield return m.M42;
+            yield return m.M43;
+            yield return m.M44;
+        }
+
+        // OpenTK Matrix4의 분해
+        private static bool DecomposeMatrix(this Matrix4 matrix, out Vector3 scale, out Quaternion rotation, out Vector3 translation)
+        {
+            // 초기화
+            scale = new Vector3();
+            rotation = Quaternion.Identity;
+            translation = new Vector3();
+
+            // 행렬에서 위치 추출
+            translation = new Vector3(matrix.M41, matrix.M42, matrix.M43);
+
+            // X, Y, Z 축 벡터 추출
+            Vector3 right = new(matrix.M11, matrix.M12, matrix.M13);
+            Vector3 up = new(matrix.M21, matrix.M22, matrix.M23);
+            Vector3 forward = new(matrix.M31, matrix.M32, matrix.M33);
+
+            // 스케일 벡터 추출
+            scale.X = right.Length;
+            scale.Y = up.Length;
+            scale.Z = forward.Length;
+
+            // 벡터를 정규화
+            right.Normalize();
+            up.Normalize();
+            forward.Normalize();
+
+            // 회전 행렬 생성
+            Matrix3 rotationMatrix = new(
+                right.X, up.X, forward.X,
+                right.Y, up.Y, forward.Y,
+                right.Z, up.Z, forward.Z);
+
+            // 쿼터니언으로 변환
+            rotation = Quaternion.FromMatrix(rotationMatrix);
+
+            return true;
+        }
+
+        public static Vector3 ExtractEulerAngles(this Matrix4 matrix)
+        {
+            // X, Y, Z 축 회전 각도 계산
+            float pitch, yaw, roll;
+
+            // 회전 행렬의 요소를 추출
+            float m00 = matrix.M11;
+            float m01 = matrix.M21;
+            float m02 = matrix.M31;
+            float m10 = matrix.M12;
+            float m11 = matrix.M22;
+            float m12 = matrix.M32;
+            float m20 = matrix.M13;
+            float m21 = matrix.M23;
+            float m22 = matrix.M33;
+
+            // pitch (X축 회전) 계산
+            float sy = (float)Math.Sqrt((m00 * m00) + (m01 * m01));
+            bool singular = sy < 1e-6; // 마진 오차
+
+            if (!singular)
+            {
+                pitch = (float)Math.Atan2(m21, m22);
+                yaw = (float)Math.Atan2(-m20, sy);
+                roll = (float)Math.Atan2(m10, m00);
+            }
+            else
+            {
+                pitch = (float)Math.Atan2(-m12, m11);
+                yaw = (float)Math.Atan2(-m20, sy);
+                roll = 0;
+            }
+
+            return new Vector3(pitch, yaw, roll);
+        }
+        public static Matrix4 InverseTranspose(this Matrix4 mat)
+        {
+            var inv = Matrix4.Invert(mat);
+            inv.Transpose();
+            return inv;
+        }
+        public static Vector3 TransformPosition(Vector3 pos, Matrix4 mat) => pos.Transform(mat);
+        public static Vector3 TransformNormal(Vector3 normal, Matrix4 mat) => Vector3.TransformNormal(normal, mat);
+        public static Matrix4 CreateTrapezoidScale(float xBottom, float yBottom, float xTop, float yTop, float height)
+        {
+            // Bottom을 Z=0에 scale, top을 Z=height에 scale, lerp-like
+            // 간단 구현: average scale + shear for taper
+            float avgX = (xBottom + xTop) * 0.5f;
+            float avgY = (yBottom + yTop) * 0.5f;
+            return Matrix4.CreateScale(avgX, avgY, height);
+        }
+        public static bool IsInvalidmatrix(this Matrix4 matrix)
+        {
+            return !MathUtil.IsFinite(matrix.M11)
+                || !MathUtil.IsFinite(matrix.M12)
+                || !MathUtil.IsFinite(matrix.M13)
+                || !MathUtil.IsFinite(matrix.M14)
+                || !MathUtil.IsFinite(matrix.M21)
+                || !MathUtil.IsFinite(matrix.M22)
+                || !MathUtil.IsFinite(matrix.M23)
+                || !MathUtil.IsFinite(matrix.M24)
+                || !MathUtil.IsFinite(matrix.M31)
+                || !MathUtil.IsFinite(matrix.M32)
+                || !MathUtil.IsFinite(matrix.M33)
+                || !MathUtil.IsFinite(matrix.M34)
+                || !MathUtil.IsFinite(matrix.M41)
+                || !MathUtil.IsFinite(matrix.M42)
+                || !MathUtil.IsFinite(matrix.M43)
+                || !MathUtil.IsFinite(matrix.M44);
+        }
+    }
+}

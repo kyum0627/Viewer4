@@ -1,0 +1,71 @@
+﻿using System;
+using OpenTK.Mathematics;
+using IGX.Geometry.Common;
+
+namespace IGX.Geometry.Distance
+{
+    public class DistanceLine2Ray2
+    {
+        public Line2f line;
+        public Ray2f ray;
+
+        public DistanceLine2Ray2(Line2f L, Ray2f R)
+        {
+            line = L;
+            ray = R;
+        }
+
+        /// <summary>
+        /// Line과 Ray간 최단 거리
+        /// </summary>
+        /// <param name="line"></param>
+        /// <param name="ray"></param>
+        /// <returns></returns>
+        public Result2f Compute()
+        {
+            Result2f result = new();
+
+            Vector2 diff = line.Point - ray.origin;
+            float a01 = -Vector2.Dot(line.Direction, ray.direction);
+            float b0 = Vector2.Dot(diff, line.Direction);
+            float s0, s1;
+
+            if (Math.Abs(a01) < 1f)
+            {
+                float b1 = -Vector2.Dot(diff, ray.direction);
+                s1 = (a01 * b0) - b1;
+
+                if (s1 >= 0f)
+                {
+                    // Two interior ControlPoints are closest,
+                    // one on line and one on ray.
+                    float det = 1 - (a01 * a01);
+                    s0 = ((a01 * b1) - b0) / det;
+                    s1 /= det;
+                }
+                else
+                {
+                    // Origin of ray and interior point of line are closest.
+                    s0 = -b0;
+                    s1 = 0;
+                }
+            }
+            else
+            {
+                // Lines are parallel, closest pair with one point at ray
+                // Point.
+                s0 = -b0;
+                s1 = 0;
+            }
+
+            result.parameter[0] = s0;
+            result.parameter2[0] = s1;
+            result.closest[0] = line.Point + (s0 * line.Direction);
+            result.closest[1] = ray.origin + (s1 * ray.direction);
+            diff = result.closest[0] - result.closest[1];
+            result.sqrDistance = Vector2.Dot(diff, diff);
+            result.distance = (float)Math.Sqrt(result.sqrDistance);
+            return result;
+        }
+    }
+}

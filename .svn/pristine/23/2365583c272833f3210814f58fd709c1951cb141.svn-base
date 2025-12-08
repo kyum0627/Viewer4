@@ -1,0 +1,66 @@
+﻿using IGX.Geometry.DataStructure;
+using IGX.Geometry.Tessellation;
+using OpenTK.Graphics.OpenGL4;
+using OpenTK.Mathematics;
+
+namespace IGX.ViewControl.Render
+{
+    public class ObjectBoxRenderer : IDisposable
+    {
+        private static readonly uint[] edgeIndices = new uint[]
+        {
+             0,  1,  1,  2,  2,  3,  3,  0,
+             4,  5,  5,  6,  6,  7,  7,  4,
+             8,  9,  9, 10, 10, 11, 11,  8,
+            12, 13, 13, 14, 14, 15, 15, 12,
+            16, 17, 17, 18, 18, 19, 19, 16,
+            20, 21, 21, 22, 22, 23, 23, 20
+        };
+        Shader shader;
+        private static RendererMeshWithEdge<Vertex>? _boxRenderer;
+        //private static RendererMesh<Vertex>? _boxRenderer;
+        public ObjectBoxRenderer()
+        {
+            shader = new(ShaderSource.simpleVertex_WithNormal, ShaderSource.simpleFragment_WithNormal, false);
+            var (pos, nor, faceIndices) = TessellationUtility.SixFacetsVolume();
+            Vertex[] vertices = [.. pos.Select((p, i) => new Vertex(p, nor[i]))];
+            _boxRenderer = new RendererMeshWithEdge<Vertex>(vertices, [.. faceIndices], edgeIndices, shader);
+            //_boxRenderer = new RendererMesh<Vertex>(vertices, [.. faceIndices], edgeIndices, shader);
+
+        }
+        private void Render(Matrix4 model, IMyCamera camera, Vector4 Color, RenderMode drawEdge)
+        {
+            _boxRenderer?.Render(model, camera, Color, drawEdge);
+        }
+
+        public void Render(List<Matrix4> BoxesToDraw, IMyCamera camera, Vector4 Color)
+        {
+            if (BoxesToDraw.Count > 0)
+            {
+                foreach (var boxmatrix in BoxesToDraw)
+                {
+                    Render(boxmatrix, camera, Color, RenderMode.Edges);
+                }
+            }
+        }
+
+        private bool bDisposed = false;
+
+        public void Dispose()
+        {
+            Dispose(true);
+            GC.SuppressFinalize(this);
+        }
+        protected virtual void Dispose(bool disposing)
+        {
+            if (!bDisposed)
+            {
+                if (disposing)
+                {
+                    _boxRenderer?.Dispose();
+                }
+                bDisposed = true;
+            }
+        }
+    }
+}

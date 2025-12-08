@@ -1,0 +1,42 @@
+﻿using System;
+using OpenTK.Mathematics;
+
+namespace IGX.Geometry.Common
+{
+    public static class QuaternionExtension
+    {
+        /// <summary>
+        /// 두 단위 벡터 사이의 회전 쿼터니언을 생성.
+        /// </summary>
+        /// <param name="from">기존 벡터 (단위 벡터여야 함).</param>
+        /// <param name="to">목표 벡터 (단위 벡터여야 함).</param>
+        /// <returns>from 벡터를 to 벡터로 회전시키는 쿼터니언.</returns>
+        public static Quaternion FromUnitVectors(this Vector3 from, Vector3 to)
+        {
+            float dot = Vector3.Dot(from, to);// 두 벡터의 사잇각
+
+            if (Math.Abs(dot - 1.0f) < 0.0001f)
+            { // 두 벡터의 내각이 0에 가까운 경우
+                return Quaternion.Identity;
+            }
+            if (Math.Abs(dot + 1.0f) < 0.0001f)
+            { // 두 벡터의 내각이 180도에 까까운 경우 임의의 직교 벡터를 찾아 회전축으로 사용
+                Vector3 axis = Vector3.Cross(Vector3.UnitX, from);
+                if (axis.LengthSquared < 0.0001f)
+                {
+                    axis = Vector3.Cross(Vector3.UnitY, from);
+                }
+                axis = axis.Normalized();
+                return Quaternion.FromAxisAngle(axis, MathHelper.Pi);
+            }
+
+            // 일반적인 경우: 외적을 계산하여 회전축을 찾음.
+            Vector3 cross = Vector3.Cross(from, to);
+            cross.Normalize(); // 회전축을 단위 벡터화
+
+            // 회전 쿼터니언을 생성
+            float angle = (float)Math.Acos(dot);
+            return Quaternion.FromAxisAngle(cross, angle);
+        }
+    }
+}

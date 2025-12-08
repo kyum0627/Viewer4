@@ -1,0 +1,15 @@
+﻿namespace IGX.Loader.AMFileLoader
+{
+    public struct FileInformation(string info, string note, string date, string user, string encode)
+    {
+        public uint version = 0;
+        public string project = string.Empty;
+        public string Name = string.Empty;
+
+        public string? Info = info; //AVEVA Marine HullDesign Mk12.1.SP4.44[6712]  (WINDOWS-NT 6.3)  (25 Oct 2017 : 20:27)
+        public string? Note = note; //
+        public string? Date = date; // Mon Sep 21 14:09:44 2020
+        public string? User = user; // PLM_INFO01@HHI132948-28
+        public string? Encoding = encode; //Unicode UTF-8
+    }
+}

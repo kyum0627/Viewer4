@@ -1,0 +1,34 @@
+﻿using IGX.Geometry.DataStructure;
+using IGX.ViewControl.Render.Materials;
+using OpenTK.Graphics.OpenGL4;
+using OpenTK.Mathematics;
+
+namespace IGX.ViewControl.Render
+{
+    public class RendererNormalVectors
+    {
+        private readonly RendererVector renderer;
+        private Shader shader;
+        public RendererNormalVectors(RendererVector renderer, Shader shader)
+        {
+            this.renderer = renderer;
+            this.shader = shader;
+        }
+        private void DrawVectors(IMyCamera camera, IEnumerable<VectorInstance> arrowDataList, float size)
+        {
+            var instanceData = Vector2MatrixInstanceHelper.ConvertVectorToMatrix(arrowDataList, camera.ViewMatrix, camera.ProjectionMatrix, camera.ViewportWidth, size);
+            renderer.Draw(camera.ViewMatrix, camera.ProjectionMatrix, instanceData, shader, true);
+        }
+        public void Renderer(List<Vertex> normalVectore, IMyCamera camera, Vector4 vectorColor, float VectorSize)
+        {
+            // 선택된 객체 박스는 항상 맨 위에 그려져야 하므로 깊이 테스트 비활성화
+            GL.Enable(EnableCap.DepthTest);
+            GL.DepthMask(true);
+
+            if (normalVectore.Count != 0)
+            {
+                DrawVectors(camera, normalVectore.Select(d => new VectorInstance(d, vectorColor)), VectorSize);
+            }
+        }
+    }
+}

@@ -1,0 +1,125 @@
+﻿using IGX.ViewControl.IGX.ViewControl;
+using OpenTK.GLControl;
+using OpenTK.Windowing.Common;
+
+namespace IGX.ViewControl
+{
+    public partial class IgxVControl : UserControl, IDisposable
+    {
+        private readonly IgxViewAPI _apis;
+
+        private GLView _views;
+        private bool _isDisposed;
+        public IgxViewAPI APIs => _views.APIs;
+        public IgxVControl(IgxViewAPI paramApi)
+        {
+            _apis = paramApi ?? throw new ArgumentNullException(nameof(paramApi));
+            InitializeComponent();
+
+            glControl = new GLControl(
+              new GLControlSettings()
+              {
+                  APIVersion = new Version(4, 6, 0, 0),
+                  AutoLoadBindings = true,
+                  Flags = ContextFlags.ForwardCompatible,
+                  Profile = ContextProfile.Core,
+                  IsEventDriven = true,
+                  API = ContextAPI.OpenGL,
+                  NumberOfSamples = 8,
+                  StencilBits = 24,
+                  DepthBits = 8,
+                  RedBits = 8,
+                  GreenBits = 8,
+                  BlueBits = 8,
+                  AlphaBits = 8,
+                  SrgbCapable = true
+              })
+            {
+                Dock = DockStyle.Fill,
+                IsEventDriven = true,
+                Name = "glControl",
+                TabIndex = 1
+            };
+
+            panel1.Controls.Add(glControl);
+            _views = new GLView(paramApi, glControl);
+
+        }
+        public void ClearModelData()
+        {
+            _views.ClearModelData();
+        }
+        private void FitModel_Click(object sender, EventArgs e)
+        {
+            _views.FitModel_Click(sender, e); // Assuming this method is moved to GLView
+        }
+        private void SetViewDirection(object sender, EventArgs e)
+        {
+            _views.SetViewDirection(sender, e); // Assuming this method is moved
+        }
+        private void GlControl_Load(object? sender, EventArgs e)
+        {
+            _views.GlControl_Load(sender, e);
+        }
+
+        private void GlControl_Paint(object? sender, PaintEventArgs e)
+        {
+            _views.GlControl_Paint(sender, e);
+        }
+
+        private void GlControl_Resize(object? sender, EventArgs e)
+        {
+            _views.GlControl_Resize(sender, e);
+        }
+
+        private void ToggleRenderMode(object sender, EventArgs e)
+        {
+            switch (_apis.Shading.Mode)
+            {
+                case ShadeMode.Flat:
+                    _apis.Shading.Mode = ShadeMode.Xray;
+                    break;
+                case ShadeMode.Xray:
+                    _apis.Shading.Mode = ShadeMode.OUTLINE;
+                    break;
+                case ShadeMode.OUTLINE:
+                    _apis.Shading.Mode = ShadeMode.Phong;
+                    break;
+                case ShadeMode.Phong:
+                    _apis.Shading.Mode = ShadeMode.Flat;
+                    break;
+            }
+            glControl.Invalidate();
+        }
+
+        private void TogglSelect(object sender, EventArgs e)
+        {
+            _views.TogglSelect(sender, e);
+        }
+
+        private void ApplySelectColor(object sender, EventArgs e)
+        {
+            _views.ApplySelectColor(sender, e);
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+            if (_isDisposed) return;
+
+            if (disposing)
+            {
+                _views.Dispose();
+                if (glControl != null)
+                {
+                    glControl.Parent?.Controls.Remove(glControl);
+                    glControl.Dispose();
+                }
+
+                components?.Dispose();
+            }
+
+            _isDisposed = true;
+            base.Dispose(disposing);
+        }
+    }
+}

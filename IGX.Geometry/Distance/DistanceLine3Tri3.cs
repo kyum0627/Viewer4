@@ -1,0 +1,116 @@
+﻿using System;
+using OpenTK.Mathematics;
+using IGX.Geometry.Common;
+
+namespace IGX.Geometry.Distance
+{
+    // https://www.geometrictools.com/Downloads/Downloads.html
+    public class DistanceLine3Triangle3
+    {
+        Line3f line;
+        Triangle3f triangle;
+
+        public DistanceLine3Triangle3(Line3f LineIn, Triangle3f TriangleIn)
+        {
+            triangle = TriangleIn;
+            line = LineIn;
+        }
+
+        public Result3f Compute()
+        {
+            Result3f result = new();
+
+            Vector3 E0 = triangle.V1 - triangle.V0;
+            Vector3 E1 = triangle.V2 - triangle.V0;
+            Vector3 normal = E0.UnitCross(E1);
+            //float NdD = Vector3.Dot(norID, line.Direction);
+            float NdD = normal.Dot(line.direction);
+
+            // 삼각형이 놓인 평면과 직선이 평행하면 교차하지 않음
+            // 즉, 삼각형의 norID vector와 직선의 Direction vector간 내적이 0 이면 선과 삼각형은 평행
+            if (Math.Abs(NdD) > MathUtil.ZeroTolerance)
+            {   // 교차 가능함
+                Vector3 Df = line.origin - triangle.V0;
+                //Vector3 U = Vector3.Zero;
+                //Vector3 V = Vector3.Zero;
+                //U.ComplementBasis(ref V, ref line.Direction);
+                line.direction.MakeUVnormalsFromW(out Vector3 U, out Vector3 V);
+                //float UdE0 = Vector3.Dot(U, E0);
+                //float UdE1 = Vector3.Dot(U, E1);
+                //float UdDf = Vector3.Dot(U, Df);
+                //float VdE0 = Vector3.Dot(V, E0);
+                //float VdE1 = Vector3.Dot(V, E1);
+                //float VdDf = Vector3.Dot(V,Df);
+                float UdE0 = U.Dot(E0);
+                float UdE1 = U.Dot(E1);
+                float UdDf = U.Dot(Df);
+                float VdE0 = V.Dot(E0);
+                float VdE1 = V.Dot(E1);
+                float VdDf = V.Dot(Df);
+                float invDet = 1 / ((UdE0 * VdE1) - (UdE1 * VdE0));
+
+                // 교차점의 barycentric coordinate
+                float b1 = ((VdE1 * UdDf) - (UdE1 * VdDf)) * invDet;
+                float b2 = ((UdE0 * VdDf) - (VdE0 * UdDf)) * invDet;
+                float b0 = 1 - b1 - b2;
+
+                // 교차점이 삼각형 내부에 있는지 확인
+                if (b0 >= 0 && b1 >= 0 && b2 >= 0)
+                {// 삼각형 내부에 있으므로 교차점 계산
+                 // 교차점의 직선상 parameter
+                 //float DdE0 = Vector3.Dot(line.Direction, E0);
+                 //float DdE1 = Vector3.Dot(line.Direction, E1);
+                 //float DdDiff = Vector3.Dot(line.Direction, Df);
+                    float DdE0 = line.direction.Dot(E0);
+                    float DdE1 = line.direction.Dot(E1);
+                    float DdDiff = line.direction.Dot(Df);
+                    result.parameter[0] = (b1 * DdE0) + (b2 * DdE1) - DdDiff;
+
+                    // 교차점의 삼각형 기준 parameter = barycentric coordinate
+                    result.parameter2 = new float[3] { b0, b1, b2 };
+
+                    // 삼각형 내 혹은 삼각형의 boundary 상의 교점
+                    result.closest[0] = line.origin + (result.parameter[0] * line.direction);
+                    result.closest[1] = triangle.V0 + (b1 * E0) + (b2 * E1);
+
+                    // 교차점이 삼각형 내부에 있으므로 최단 거리는 "0"
+                    result.sqrDistance = 0f;
+                    return result;
+                }
+                // 교차점이 삼각형의 외부에 존재
+            }
+
+            // 삼각형이 놓인 평면과 선이 놓인 평면이 평행하므로 같은 면위에 있는지 조사
+            // 다음의 둘 중 한가지 경우에 해당됨
+            // 1. 각각의 평면이 서로 평행하지 않아 교차하나 교점이 삼각형 외부에 존재하거나
+            // 2. 두 평면이 평행
+            const float sqrDist = float.MaxValue;
+            result.sqrDistance = float.MaxValue;
+            result.distance = float.MaxValue;
+            for (int i0 = 2, i1 = 0; i1 < 3; i0 = i1++)
+            {
+                Segment3f segment = new(triangle[i0], triangle[i1]);
+
+                DistanceLine3Seg3 lsResult;
+                lsResult = new DistanceLine3Seg3(line, segment);
+                Result3f res = lsResult.Compute();
+
+                if (res.sqrDistance < result.sqrDistance)
+                {
+                    result.sqrDistance = res.sqrDistance;
+                    result.distance = res.distance;
+                    result.parameter[0] = res.parameter[0];
+                    result.parameter2[i0] = 0.5f * (1f - (res.parameter[0] / segment.extent));
+                    result.parameter2[i1] = 1f - result.parameter2[i0];
+                    result.parameter2[3 - i0 - i1] = 0f;
+                    result.closest[0] = res.closest[0];
+                    result.closest[1] = res.closest[1];
+                }
+            }
+
+            result.sqrDistance = sqrDist;
+            result.distance = (float)Math.Sqrt(result.sqrDistance);
+            return result;
+        }
+    }
+}

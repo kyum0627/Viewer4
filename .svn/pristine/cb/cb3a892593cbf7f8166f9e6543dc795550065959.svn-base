@@ -1,0 +1,53 @@
+﻿//using IGX.Geometry.Curves;
+//using OpenTK.Mathematics;
+//using System;
+//using System.Collections.Generic;
+//using System.Linq;
+
+//namespace IGX.Geometry.Curves
+//{
+//    public class EllipseCurve : CurveBase
+//    {
+//        private Vector3 _center;
+//        private float _radiusX;
+//        private float _radiusY;
+//        private float _startAngle;
+//        private float _endAngle;
+//        private int _segments;
+
+//        public EllipseCurve(Vector3 center, float radiusX, float radiusY, float startAngle = 0, float endAngle = MathF.PI * 2, int segments = 50)
+//        {
+//            _center = center;
+//            _radiusX = radiusX;
+//            _radiusY = radiusY;
+//            _startAngle = startAngle;
+//            _endAngle = endAngle;
+//            _segments = segments;
+//            GenerateVertices();
+//        }
+
+//        public override void GenerateVertices()
+//        {
+//            Points.Clear();
+//            float angleRange = _endAngle - _startAngle;
+
+//            for (int i = 0; i <= _segments; i++)
+//            {
+//                float angle = _startAngle + angleRange / _segments * i;
+//                Points.Add(new Vector3(
+//                    _center.X + _radiusX * MathF.Cos(angle),
+//                    _center.Y + _radiusY * MathF.Sin(angle),
+//                    _center.Z
+//                ));
+//            }
+
+//            UpdateCumulativeLengths();
+//            UpdateNormals();
+//        }
+
+//        public override void UpdateControlPoints(IEnumerable<Vector3> newControls)
+//        {
+//            throw new NotImplementedException("EllipseCurve는 매개변수 기반 업데이트 필요");
+//        }
+//    }
+//}

@@ -1,0 +1,407 @@
+﻿namespace IGX.ViewControl.Render
+{
+    // glsl program의 한글 주석을 허용하지 않음.
+    public static class ShaderSource
+    {
+        private const string Version = @"#version 440 core";
+
+        private const string Defines = @"
+            #define HIDDEN_LAYER -1
+            #define SHADE_MODE_DEFAULT 0
+            #define SHADE_MODE_XRAY 1
+            #define SHADE_MODE_WHITE 2
+        ";
+
+        private const string ModelMatrix = @"
+            uniform mat4 uModel;";
+
+        private const string ViewProjection = @"
+            uniform mat4 uView;
+            uniform mat4 uProjection;";
+
+        private const string PositionNormal = @"
+            layout(location = 0) in vec3 aPos;
+            layout(location = 1) in vec3 aNormal;";
+
+        private const string InstanceData = PositionNormal + AssemblyInfo + @"
+            layout(location = 2) in mat4 instanceModel;
+            layout(location = 6) in vec4 instanceColor;
+            layout(location = 7) in int selectMode;
+            ";
+
+        private const string AssemblyInfo = @"
+            layout(location = 8) in int EassemblyID;
+            layout(location = 9) in int MeshID;
+            layout(location =10) in int GeometryType;
+            layout(location =11) in int geoLayer;";
+
+        private const string Lighting = @"
+            uniform vec3 uLightPosition;
+            uniform vec3 uLightDirection;
+            uniform vec3 uLightColor;
+            uniform float uAmbientStrength;
+            uniform float uSpecularStrength;
+            uniform int uShininess;
+            uniform vec3 uViewPosition;
+            ";
+
+        private const string LightingAndPhongShading = Lighting + @"
+            vec3 calculatePhongShading(vec3 fragmentPosition, vec3 fragmentNormal, vec4 objectColor)
+            {
+                vec3 norm = normalize(fragmentNormal);
+                vec3 lightDir = normalize(uLightDirection);
+                vec3 ambient = uAmbientStrength * uLightColor;
+
+                float diff = max(dot(norm, lightDir), 0.0);
+                vec3 diffuse = diff * uLightColor;
+
+                //vec3 viewDir = normalize(uViewPosition - fragmentPosition);
+                vec3 halfwayDir = normalize(-lightDir);// + viewDir);
+                float spec = pow(max(dot(norm, halfwayDir), 0.0), uShininess);
+                vec3 specular = uSpecularStrength * spec * uLightColor;
+
+                vec3 result = (ambient + diffuse + specular) * objectColor.rgb;
+                return result;
+            }";
+
+        public const string gBufferVtx = Version + Defines + ViewProjection + InstanceData + @"
+            uniform int shadeMode;
+
+            out vec3 FragPos;
+            out vec3 Normal;
+            out vec4 AlbedoColor;
+
+            flat out int vsOutObjectID;
+            flat out int shadeModeIn;
+            flat out int vsLayer;
+
+            void main()
+            {
+                mat4 model = mat4(instanceModel);
+                gl_Position = uProjection * uView * model * vec4(aPos, 1.0);
+                FragPos = (model * vec4(aPos, 1.0)).xyz;
+                Normal = mat3(transpose(inverse(model))) * aNormal;
+
+                vsOutObjectID = EassemblyID;//MeshID;
+                shadeModeIn = shadeMode;
+                vsLayer = geoLayer;
+                
+                switch(shadeModeIn)
+                {
+                    case SHADE_MODE_XRAY:
+                        AlbedoColor = vec4(0.05, 0.10, 0.25, 0.40);
+                        break;
+                    case SHADE_MODE_WHITE:
+                        AlbedoColor = vec4(1, 1, 1, 1);
+                        break;
+                    //case SHADE_MODE_DEFAULT:
+                    //    AlbedoColor = instanceColor;
+                    //    break;
+                }
+
+                if(selectMode == 99) AlbedoColor.a = 0;
+            }";
+
+        public const string gBufferFrg = Version + Defines + @"
+            layout(location = 0) out vec3 gPosition;
+            layout(location = 1) out vec3 gNormal;
+            layout(location = 2) out vec4 gAlbedo;
+            layout(location = 3) out int gObjectID;
+            layout(location = 4) out float gXrayOverlapAccum;
+
+            in vec3 FragPos;
+            in vec3 Normal;
+            in vec4 AlbedoColor;
+            flat in int vsOutObjectID;
+            flat in int shadeModeIn;
+            flat in int vsLayer;
+
+            void main()
+            {
+                if (AlbedoColor.a < 1 || vsLayer < HIDDEN_LAYER)
+                {
+                    discard; // do not record this into gbuffer
+                }
+
+                gPosition = FragPos;
+                gNormal = normalize(Normal);
+                gAlbedo = AlbedoColor;
+                gObjectID = vsOutObjectID;
+                gXrayOverlapAccum = (shadeModeIn == 1) ? 0.1 : 0.0;
+            }";
+
+        public const string outlinePostFrg = Version + LightingAndPhongShading + @"
+            out vec4 FragColor;
+            in vec2 TexCoords;
+
+            // --- G-_instancedBuffer Textures ---
+            uniform sampler2D gPosition;
+            uniform sampler2D gNormal;
+            uniform sampler2D gAlbedo;
+            uniform sampler2D gDepthStencil;
+            uniform isampler2D gObjectID;
+            uniform sampler2D gXrayOverlapAccum; // Used for X-ray mode to show accumulated overlap
+
+            // --- General SceneParameters / Screen Uniforms ---
+            uniform vec2 uScreenSize;
+            uniform int uDrawEdge;
+            uniform vec3 uEdgelineColor;
+            uniform float uEdgelineThickness;
+
+            // --- Constants for Edge Detection Thresholds ---
+            const float DEPTH_THRESHOLD_WORLD = 0.5;
+            const float NORMAL_THRESHOLD_DOT = 0.50;
+            const float COLOR_THRESHOLD = 0.01;
+
+            bool detectEdge(vec3 currentFragPos, vec3 currentNormal, float currentDepth, int currentObjectID, vec4 currentAlbedoColor)
+            {
+                vec2 texelSize = uEdgelineThickness / uScreenSize; // Calculate texel size for sampling neighbors
+                vec2 offsets[4] = vec2[](vec2(1.0, 0.0), vec2(-1.0, 0.0), vec2(0.0, 1.0), vec2(0.0, -1.0)); // Define offsets for 4 direct neighbors (left, right, up, down)
+
+                for (int i = 0; i < 4; ++i)
+                {
+                    vec2 neighborTexCoords = TexCoords + offsets[i] * texelSize;
+
+                    // Sample G-_instancedBuffer for neighbor's data
+                    vec3 neighborFragPos = texture(gPosition, neighborTexCoords).rgb;
+                    vec3 neighborNormal = texture(gNormal, neighborTexCoords).rgb;
+                    float neighborDepth = texture(gDepthStencil, neighborTexCoords).r;
+                    int neighborObjectID = texture(gObjectID, neighborTexCoords).r;
+                    vec4 neighborAlbedo = texture(gAlbedo, neighborTexCoords);
+
+                    // --- Edge Detection Criteria ---
+                    if (currentObjectID != neighborObjectID) return true; // 1. Different Object ID
+                    if (dot(currentNormal, neighborNormal) < NORMAL_THRESHOLD_DOT) return true;// 2. Significant Normal Difference
+                    if (abs(currentDepth - neighborDepth) > DEPTH_THRESHOLD_WORLD) return true;// 3. Significant Depth Difference
+                    if (distance(currentAlbedoColor.rgb, neighborAlbedo.rgb) > COLOR_THRESHOLD) return true;// 4. Significant Color Difference
+                }
+                return false; // No edge detected based on current criteria
+            }
+            
+            void main()
+            {
+                if (texture(gAlbedo, TexCoords).a < 0.01) // Use a small epsilon to handle float precision issues
+                {
+                    discard;
+                }
+                // --- G-_instancedBuffer Data Sampling ---
+                vec3 FragPos = texture(gPosition, TexCoords).rgb;
+                vec3 Normal = normalize(texture(gNormal, TexCoords).rgb); // Ensure normal is normalized
+                vec4 AlbedoColor = texture(gAlbedo, TexCoords);
+                float currentDepth = texture(gDepthStencil, TexCoords).r;
+                int currentObjectID = texture(gObjectID, TexCoords).r;
+
+                vec3 phongResult = calculatePhongShading(FragPos, Normal, AlbedoColor);
+
+                if (uDrawEdge == 1)
+                {
+                    bool isEdge = detectEdge(FragPos, Normal, currentDepth, currentObjectID, AlbedoColor);
+                    if (isEdge)
+                    {
+                        FragColor = vec4(uEdgelineColor, 1.0); // Apply edge Color if detected
+                        return; // Exit after Drawing edge
+                    }
+                }
+                FragColor = vec4(phongResult, AlbedoColor.a);
+            }";
+
+        public const string quadVtx = Version + @"
+            layout (location = 0) in vec2 aPos;
+            layout (location = 1) in vec2 aTexCoords;
+
+            out vec2 TexCoords;
+
+            void main()
+            {
+                TexCoords = aTexCoords;
+                gl_Position = vec4(aPos.x, aPos.y, 0.0, 1.0);
+            }";
+
+        // --- 노멀을 사용하지 않는 Simple 셰이더 ---
+        public const string simpleVertex_NoNormal = Version + ViewProjection + @"
+            layout(location = 0) in vec3 aPos;
+            uniform mat4 uModel;
+
+            void main()
+            {
+                gl_Position = uProjection * uView * uModel * vec4(aPos, 1.0);
+            }";
+
+        public const string simpleFragment_NoNormal = Version + @"
+            out vec4 FragColor;
+            uniform vec4 uObjectColor;
+    
+            void main()
+            {
+                FragColor = uObjectColor;
+            }";
+
+        // --- 노멀을 사용하는 Simple 셰이더 ---
+        public const string simpleVertex_WithNormal = Version + PositionNormal + ViewProjection + ModelMatrix + @"
+            out vec3 Normal;
+            out vec3 FragPos;
+
+            void main()
+            {
+                gl_Position = uProjection * uView * uModel * vec4(aPos, 1.0);
+                FragPos = (uModel * vec4(aPos, 1.0)).xyz;
+                Normal = mat3(transpose(inverse(uModel))) * aNormal;
+            }";
+
+        public const string simpleFragment_WithNormal = Version + LightingAndPhongShading + @"
+            out vec4 FragColor;
+            uniform vec4 uObjectColor;
+    
+            in vec3 Normal;
+            in vec3 FragPos;
+
+            void main()
+            {
+                vec3 resultColor = calculatePhongShading(FragPos, Normal, uObjectColor);
+                FragColor = vec4(resultColor, uObjectColor.a);
+            }";
+
+        public static readonly string VertexShaderSourceInstancedAttrib = Version + ViewProjection + InstanceData + @"
+            out vec3 vNormal;
+            out vec4 vObjectColor;
+            out vec3 worldPos;
+            void main()
+            {
+                mat4 model = mat4(instanceModel);//Row0, modelMatrixRow1, modelMatrixRow2, modelMatrixRow3);
+                vNormal = mat3(transpose(inverse(model))) * aNormal;
+                vObjectColor = instanceColor;
+                worldPos = (model * vec4(aPos, 1.0)).xyz; //
+                gl_Position = uProjection * uView * vec4(worldPos, 1.0);
+            }";
+
+        public static readonly string FragmentShaderSourceInstancedAttrib = Version + @"
+            in vec3 vNormal;
+            in vec4 vObjectColor;
+            in vec3 worldPos;
+            out vec4 FragColor;
+            void main()
+            {
+                vec3 uLightColor = vec3(1, 1, 1);
+                vec3 ambient = vec3(0.5,0.5,0.5);
+                vec3 norm = normalize(vNormal);
+                vec3 lightDir = vec3(0, -1, -1);
+                float diff = max(dot(norm, lightDir), 0.0);
+                vec3 diffuse = diff * uLightColor;
+
+                vec3 result = ambient + diffuse;
+                vec3 finalColor = result * vObjectColor.rgb;
+                FragColor = vec4(finalColor, vObjectColor.a);
+            }";
+
+        public const string forwardVtx = Version + Defines + ViewProjection + InstanceData + @"
+            uniform int shadeMode;
+
+            out vec3 FragPos;
+            out vec3 Normal;
+            out vec4 vObjectColor;
+            flat out int vsLayer;
+
+            void main()
+            {
+                mat4 model = mat4(instanceModel);//Row0, modelMatrixRow1, modelMatrixRow2, modelMatrixRow3);
+                gl_Position = uProjection * uView * model * vec4(aPos, 1.0);
+                FragPos = (model * vec4(aPos, 1.0)).xyz;
+                Normal = mat3(transpose(inverse(model))) * aNormal;
+
+                vsLayer = geoLayer;
+                vObjectColor = instanceColor;
+
+                switch(shadeMode)
+                {
+                    //case SHADE_MODE_XRAY:
+                    //    vObjectColor = vec4(0.05, 0.10, 0.25, 0.40);
+                    //    break;
+                    //case SHADE_MODE_WHITE:
+                    //    vObjectColor = vec4(1, 1, 1, 1);
+                    //    break;
+                    case SHADE_MODE_DEFAULT:
+                        break;
+                }
+                if(selectMode == 99) vObjectColor.a = 0;
+            }";
+
+        public const string forwardFrg = Version + Defines + LightingAndPhongShading + @"
+            out vec4 FragColor;
+
+            in vec3 FragPos;
+            in vec3 Normal;
+            in vec4 vObjectColor;
+            flat in int vsLayer;
+
+            void main()
+            {
+                if (vsLayer < HIDDEN_LAYER) {
+                    discard;
+                }
+
+                vec3 resultColor = calculatePhongShading(FragPos, Normal, vObjectColor);
+
+                FragColor = vec4(resultColor, vObjectColor.a);
+            }";
+
+        private const string Clipping = @"
+            const int MAX_CLIPPING_PLANES = 6;
+            uniform int uNumClippingPlanes;
+            uniform vec4 uClippingPlanes[MAX_CLIPPING_PLANES];
+
+            void clipFragments(vec3 worldPosition)
+            {
+                for (int i = 0; i < uNumClippingPlanes; ++i)
+                {
+                    if (dot(uClippingPlanes[i], vec4(worldPosition, 1.0)) < 0.0)
+                    {
+                        discard;
+                    }
+                }
+            }";
+
+        public const string backgroundVertexGlsl = @"
+            #version 440 core
+            layout(location = 0) in vec2 aPos;
+            layout(location = 1) in vec2 aTexCoord;
+
+            out vec2 TexCoord;
+
+            void main()
+            {
+                gl_Position = vec4(aPos, 0.0, 1.0);
+                TexCoord = aTexCoord;
+            }
+        ";
+
+        public const string backgroundFragmentGlsl = @"
+            #version 440 core
+            in vec2 TexCoord;
+            out vec4 FragColor;
+            uniform sampler2D infoTexture;
+            uniform vec2 iResolution;
+
+            void main()
+            {
+                vec3 infogetLogo = mix(vec3(0.0, 0.0, 1.0), vec3(0.95, 0.95, 1.0), TexCoord.y + 0.6);
+                //vec3 infogetLogo = vec3(0.98, 0.98, 0.98);
+                vec2 logoSize = vec2(150.0, 51); 
+                vec2 screenUV = TexCoord * iResolution;
+                vec2 logoPos = vec2(iResolution.x - logoSize.x - 16.0, 16.0);
+
+                vec2 localPos = screenUV - logoPos;
+                bool inLogoRegion = all(greaterThanEqual(localPos, vec2(0.0))) &&
+                                    all(lessThan(localPos, logoSize));
+
+                vec4 result = vec4(infogetLogo, 1.0);
+                if (inLogoRegion)
+                {
+                    vec2 logoUV = localPos / logoSize;
+                    vec4 logo = texture(infoTexture, logoUV);
+                    result = mix(result, logo, logo.a);
+                }
+                FragColor = result;
+            }
+        ";
+    }
+}

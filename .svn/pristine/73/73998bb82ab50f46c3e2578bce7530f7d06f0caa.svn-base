@@ -1,0 +1,152 @@
+﻿using IGX.Geometry.Common;
+using IGX.Selection3D.Scene;
+using IGX.ViewControl.Render;
+using OpenTK.Mathematics;
+
+namespace IGX.Selection3D.Core
+{
+    public class SelectionManager2
+    {
+        private readonly SelectionControl3D _glControl;
+
+        public MyCamera Camera { get; private set; }
+        private Stack<HashSet<ISelectable>> _undoStack = new();
+        private Stack<HashSet<ISelectable>> _redoStack = new();
+
+        public HashSet<ISelectable> Selected { get; } = new();
+        private Point _dragStart;
+
+        // 카메라 회전용 내부 상태
+        private float _yaw = 0f;    // Y축 회전
+        private float _pitch = 0f;  // X축 회전
+        private float _distance = 10f;
+
+        public SelectionManager2(SelectionControl3D gl)
+        {
+            _glControl = gl;
+            Camera = new MyCamera();
+            UpdateCameraPosition();
+        }
+
+        public void BeginDrag(Point start)
+        {
+            _dragStart = start;
+        }
+
+        public void EndDrag(Point end, System.Windows.Forms.MouseButtons button, bool ctrl, bool shift)
+        {
+            SaveState();
+
+            ISelectable closest = null;
+            float minDist = float.MaxValue;
+
+            foreach (var obj in _glControl.Scene.Selectables)
+            {
+                if (obj.HitTest(new Ray3f(), out float dist))
+                {
+                    if (dist < minDist)
+                    {
+                        minDist = dist;
+                        closest = obj;
+                    }
+                }
+            }
+
+            if (closest != null)
+            {
+                if (ctrl || shift)
+                    Selected.Add(closest);
+                else
+                {
+                    foreach (var s in Selected) s.OnSelected(false);
+                    Selected.Clear();
+                    Selected.Add(closest);
+                }
+
+                foreach (var s in Selected) s.OnSelected(true);
+            }
+        }
+
+        public void ApplySelection(HashSet<ISelectable> newSelection)
+        {
+            foreach (var s in Selected) s.OnSelected(false);
+            Selected.Clear();
+            foreach (var s in newSelection)
+            {
+                Selected.Add(s);
+                s.OnSelected(true);
+            }
+        }
+
+        public void ApplySelectionByName(string[] names)
+        {
+            var newSel = new HashSet<ISelectable>();
+            foreach (var obj in _glControl.Scene.Selectables)
+                if (names.Contains(obj.Name)) newSel.Add(obj);
+            ApplySelection(newSel);
+        }
+
+        public void SaveState()
+        {
+            _undoStack.Push(new HashSet<ISelectable>(Selected));
+            _redoStack.Clear();
+        }
+
+        public void Undo()
+        {
+            if (_undoStack.Count == 0) return;
+            var prev = _undoStack.Pop();
+            _redoStack.Push(new HashSet<ISelectable>(Selected));
+            ApplySelection(prev);
+        }
+
+        public void Redo()
+        {
+            if (_redoStack.Count == 0) return;
+            var next = _redoStack.Pop();
+            _undoStack.Push(new HashSet<ISelectable>(Selected));
+            ApplySelection(next);
+        }
+
+        // --------------------------------------------------
+        // Camera Control
+        // --------------------------------------------------
+        public void CameraRotate(int deltaX, int deltaY)
+        {
+            _yaw += deltaX * 0.5f;   // 마우스 민감도 조절
+            _pitch += deltaY * 0.5f;
+
+            // 피치 제한 (-89 ~ 89도)
+            _pitch = Math.Max(-89f, Math.Min(89f, _pitch));
+
+            UpdateCameraPosition();
+        }
+
+        public void CameraZoom(int delta)
+        {
+            _distance *= (float)Math.Pow(0.95f, delta / 120.0f); // 마우스 휠 단위 조절
+            _distance = Math.Max(1f, Math.Min(100f, _distance));
+            UpdateCameraPosition();
+        }
+
+        private void UpdateCameraPosition()
+        {
+            // 구면좌표 -> 카메라 위치
+            float yawRad = MathHelper.DegreesToRadians(_yaw);
+            float pitchRad = MathHelper.DegreesToRadians(_pitch);
+
+            float x = _distance * (float)(Math.Cos(pitchRad) * Math.Sin(yawRad));
+            float y = _distance * (float)(Math.Sin(pitchRad));
+            float z = _distance * (float)(Math.Cos(pitchRad) * Math.Cos(yawRad));
+
+            var Position = new Vector3(x, y, z);
+            var Target = Vector3.Zero;
+            var Up = Vector3.UnitY;
+
+            Matrix4 rot = Matrix4.Identity;
+            rot.Row0.Xyz = Position;
+            rot.Row1.Xyz = Target;
+            rot.Row2.Xyz = Up;
+        }
+    }
+}

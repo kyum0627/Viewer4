@@ -1,0 +1,268 @@
+﻿using IGX.ViewControl.Buffer;
+using OpenTK.Graphics.OpenGL4;
+namespace IGX.ViewControl.Render
+{
+    public class DrawElementsInstancedBaseInstance<TVertex, TIndex, TInstance> : IDisposable
+        where TVertex : struct where TIndex : struct where TInstance : struct
+    {
+        private readonly ElementBuffer<TVertex, TIndex> _elementBuffer;
+        private readonly ShaderStorageBuffer<TInstance> _instanceSSBO;
+        private readonly int _instanceSSBOBindingIndex;
+        private readonly int _vaoHandle;
+
+        private bool _isDisposed = false;
+
+        public int InstanceArrayCount => _instanceSSBO.Count;
+        public DrawElementsType ElementType => _elementBuffer.ElementType;
+
+        private readonly object _lock = new();
+
+        public DrawElementsInstancedBaseInstance(
+            ReadOnlySpan<TVertex> vertices,
+            ReadOnlySpan<TIndex> indices,
+            ReadOnlySpan<TInstance> instances,
+            int instanceSSBOBindingIndex,
+            BufferUsageHint vertexHint = BufferUsageHint.StaticDraw,
+            BufferUsageHint indexHint = BufferUsageHint.StaticDraw,
+            BufferUsageHint instanceHint = BufferUsageHint.DynamicDraw)
+        {
+            if (vertices.IsEmpty) throw new ArgumentException("Vertex data cannot be empty.", nameof(vertices));
+            if (indices.IsEmpty) throw new ArgumentException("Index data cannot be empty.", nameof(indices));
+            if (instances.IsEmpty) throw new ArgumentException("Instance data cannot be empty.", nameof(instances));
+
+            if (!IsContextLikelyActive())
+            {
+                throw new InvalidOperationException("Cannot create DrawElementsInstancedBaseInstance without an active OpenGL context.");
+            }
+
+            _instanceSSBOBindingIndex = instanceSSBOBindingIndex;
+
+            try
+            {
+                _vaoHandle = GL.GenVertexArray();
+                GL.BindVertexArray(_vaoHandle);
+                CheckGLError();
+
+                _elementBuffer = new ElementBuffer<TVertex, TIndex>(vertices, indices, vertexHint, indexHint);
+                _elementBuffer.Bind();
+
+                _instanceSSBO = new ShaderStorageBuffer<TInstance>(instances, instanceHint, keepCpuData: true);
+                _instanceSSBO.BindBase(_instanceSSBOBindingIndex);
+
+                GL.BindVertexArray(0);
+                CheckGLError();
+            }
+            catch (Exception ex)
+            {
+                _elementBuffer?.Dispose();
+                _instanceSSBO?.Dispose();
+                if (_vaoHandle != 0) GL.DeleteVertexArray(_vaoHandle);
+                throw new InvalidOperationException("Failed to initialize DrawElementsInstancedBaseInstance.", ex);
+            }
+        }
+
+        // 기존과 동일한 Draw 함수
+        public void Draw(PrimitiveType primitiveType)
+        {
+            if (_isDisposed) throw new ObjectDisposedException(nameof(DrawElementsInstancedBaseInstance<TVertex, TIndex, TInstance>));
+            if (!IsContextLikelyActive())
+            {
+                throw new InvalidOperationException("Cannot draw without an active OpenGL context.");
+            }
+
+            lock (_lock)
+            {
+                Bind();
+                GL.DrawElementsInstancedBaseInstance(
+                    primitiveType,
+                    _elementBuffer.IndexCount,
+                    _elementBuffer.ElementType,
+                    nint.Zero,
+                    _instanceSSBO.Count,
+                    0
+                );
+                CheckGLError();
+                Unbind();
+            }
+        }
+
+        // 기존과 동일한 ResizeInstanceBuffer 함수 (내부 구현 변경)
+        public void ResizeInstanceBuffer(int newSize)
+        {
+            if (_isDisposed) throw new ObjectDisposedException(nameof(DrawElementsInstancedBaseInstance<TVertex, TIndex, TInstance>));
+            if (newSize < _instanceSSBO.Count) throw new ArgumentException("New size cannot be smaller than the current instance count.", nameof(newSize));
+
+            // SSBO의 크기 변경은 새로운 버퍼를 생성하고 데이터를 복사하는 방식으로 구현
+            // 이는 비효율적이므로 SSBO는 크기가 고정적인 데이터에 적합
+            throw new NotSupportedException("SSBO resizing is not directly supported by this implementation. Consider using a different approach.");
+        }
+
+        // 기존과 동일한 RemoveInstance 함수 (내부 구현 변경)
+        public void RemoveInstance(int index)
+        {
+            if (_isDisposed || index < 0 || index >= _instanceSSBO.Count) return;
+
+            var cpuData = _instanceSSBO.CpuData;
+            if (cpuData.IsEmpty) return;
+
+            // CPU 데이터에서 항목 삭제
+            var newCpuData = new TInstance[cpuData.Length - 1];
+            if (index > 0)
+            {
+                cpuData.Slice(0, index).CopyTo(newCpuData.AsSpan());
+            }
+            if (index < cpuData.Length - 1)
+            {
+                cpuData.Slice(index + 1, cpuData.Length - 1 - index).CopyTo(newCpuData.AsSpan(index));
+            }
+
+            lock (_lock)
+            {
+                // GPU 버퍼를 새로운 데이터로 교체
+                _instanceSSBO.SetData(newCpuData.AsSpan());
+            }
+        }
+
+        // 기존과 동일한 AddInstance 함수 (내부 구현 변경)
+        public void AddInstance(TInstance instance)
+        {
+            if (_isDisposed) return;
+
+            lock (_lock)
+            {
+                // CPU 데이터에 항목 추가
+                var cpuData = _instanceSSBO.CpuData;
+                var newCpuData = new TInstance[cpuData.Length + 1];
+                cpuData.CopyTo(newCpuData.AsSpan());
+                newCpuData[cpuData.Length] = instance;
+
+                // GPU 버퍼를 새로운 데이터로 교체
+                _instanceSSBO.SetData(newCpuData.AsSpan());
+            }
+        }
+
+        // 기존과 동일한 UpdateInstanceData 함수 (내부 구현 변경)
+        public void UpdateInstanceData(ReadOnlySpan<TInstance> instances)
+        {
+            if (_isDisposed) return;
+            if (instances.Length > _instanceSSBO.Count) throw new ArgumentOutOfRangeException(nameof(instances), "Data length exceeds _instancedBuffer capacity.");
+            _instanceSSBO.UpdateStorageData(0, instances);
+        }
+
+        // 기존과 동일한 UpdateSingleInstance 함수 (내부 구현 변경)
+        public void UpdateSingleInstance(int index, TInstance instance)
+        {
+            if (_isDisposed) return;
+            _instanceSSBO.UpdateStorageData(index, new TInstance[] { instance }.AsSpan());
+        }
+
+        // 기존과 동일한 UpdateVertices 함수 (내부 구현 동일)
+        public void UpdateVertices(int startIndex, ReadOnlySpan<TVertex> newVertexData)
+        {
+            if (_isDisposed) return;
+            lock (_lock)
+            {
+                Bind();
+                _elementBuffer.UpdateVertices(startIndex, newVertexData);
+                Unbind();
+            }
+        }
+
+        // 기존과 동일한 UpdateIndices 함수 (내부 구현 동일)
+        public void UpdateIndices(int startIndex, ReadOnlySpan<TIndex> newIndices)
+        {
+            if (_isDisposed) return;
+            lock (_lock)
+            {
+                Bind();
+                _elementBuffer.UpdateIndices(startIndex, newIndices);
+                Unbind();
+            }
+        }
+
+        // 기존과 동일한 UpdateSingleVertex 함수 (내부 구현 동일)
+        public void UpdateSingleVertex(int vertexIndex, TVertex newVertexData)
+        {
+            if (_isDisposed) return;
+            lock (_lock)
+            {
+                Bind();
+                _elementBuffer.UpdateSingleVertex(vertexIndex, newVertexData);
+                Unbind();
+            }
+        }
+
+        // 기존과 동일한 UpdateInstanceBuffer 함수 (내부 구현 변경)
+        public void UpdateInstanceBuffer(TInstance[] instanceData, int offset, int count)
+        {
+            if (_isDisposed) throw new ObjectDisposedException(nameof(DrawElementsInstancedBaseInstance<TVertex, TIndex, TInstance>));
+            if (offset < 0 || count <= 0 || offset + count > instanceData.Length)
+            {
+                throw new ArgumentException("Invalid offset or count.", nameof(instanceData));
+            }
+            _instanceSSBO.UpdateStorageData(offset, instanceData.AsSpan(offset, count));
+        }
+
+        // 기존과 동일한 GetData 함수 (내부 구현 동일)
+        public ReadOnlySpan<TInstance> GetData()
+        {
+            if (_isDisposed) throw new ObjectDisposedException(nameof(DrawElementsInstancedBaseInstance<TVertex, TIndex, TInstance>));
+            return _instanceSSBO.CpuData;
+        }
+
+        // 기존과 동일한 Bind 함수
+        public void Bind()
+        {
+            if (_isDisposed) throw new ObjectDisposedException(nameof(DrawElementsInstancedBaseInstance<TVertex, TIndex, TInstance>));
+            if (!IsContextLikelyActive())
+            {
+                throw new InvalidOperationException("Cannot bind VAO without an active OpenGL context.");
+            }
+            GL.BindVertexArray(_vaoHandle);
+        }
+
+        // 기존과 동일한 Unbind 함수
+        public void Unbind()
+        {
+            GL.BindVertexArray(0);
+        }
+
+        // IDisposable 구현 (기존과 동일)
+        protected virtual void Dispose(bool disposing)
+        {
+            if (_isDisposed) return;
+            if (disposing)
+            {
+                _elementBuffer.Dispose();
+                _instanceSSBO.Dispose();
+                GL.DeleteVertexArray(_vaoHandle);
+            }
+            _isDisposed = true;
+        }
+
+        public void Dispose()
+        {
+            Dispose(true);
+            GC.SuppressFinalize(this);
+        }
+
+        ~DrawElementsInstancedBaseInstance()
+        {
+            Dispose(false);
+        }
+
+        private static bool IsContextLikelyActive()
+        {
+            try { GL.GetError(); return true; } catch { return false; }
+        }
+
+        private static void CheckGLError()
+        {
+            var error = GL.GetError();
+            if (error != ErrorCode.NoError)
+            {
+                throw new InvalidOperationException($"OpenGL error: {error}");
+            }
+        }
+    }
+}

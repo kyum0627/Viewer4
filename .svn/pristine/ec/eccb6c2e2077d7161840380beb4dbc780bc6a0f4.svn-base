@@ -1,0 +1,64 @@
+﻿using IGX.ViewControl.Render;
+using OpenTK.GLControl;
+using OpenTK.Mathematics;
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Text;
+using System.Threading.Tasks;
+
+namespace IGX.ViewControl
+{
+    public class DefaultMatrixCalculator : IMatrixCalculator
+    {
+        private Matrix4? _cachedMvp;
+        private Size _lastViewportSize;
+
+        public Matrix4 CalculateMVP(GLControl control, IMyCamera camera, IRenderConfig renderConfig)
+        {
+            var viewportManager = control.Tag as IViewportManager ?? new DefaultViewportManager();
+            Size viewportSize = viewportManager.GetViewportSize(control);
+
+            if (!_cachedMvp.HasValue || viewportSize != _lastViewportSize)
+            {
+                if (viewportSize.Width <= 0 || viewportSize.Height <= 0)
+                {
+                    Console.WriteLine($"Invalid viewport size for {control.Name}: Width={viewportSize.Width}, Height={viewportSize.Height}. Using identity matrix.");
+                    _cachedMvp = Matrix4.Identity;
+                    return _cachedMvp.Value;
+                }
+
+                float aspectRatio = (float)viewportSize.Width / viewportSize.Height;
+                if (float.IsNaN(aspectRatio) || float.IsInfinity(aspectRatio) || aspectRatio <= 0)
+                {
+                    Console.WriteLine($"Invalid aspect ratio for {control.Name}: {aspectRatio}. Using default 1.0");
+                    aspectRatio = 1.0f;
+                }
+
+                Matrix4 view = camera.ViewMatrix;
+                Matrix4 projection = camera.ProjectionMatrix;
+                Matrix4 model = renderConfig.GetModelMatrix(1.0f);
+                _cachedMvp = model * view * projection;
+
+                if (float.IsNaN(_cachedMvp.Value.M11) || float.IsInfinity(_cachedMvp.Value.M11))
+                {
+                    Console.WriteLine($"Invalid MVP matrix for {control.Name}: AspectRatio={aspectRatio}, ViewportSize={viewportSize.Width}x{viewportSize.Height}");
+                    _cachedMvp = Matrix4.Identity;
+                }
+                else
+                {
+                    _lastViewportSize = viewportSize;
+                    Console.WriteLine($"Calculated MVP for {control.Name} with aspect ratio: {aspectRatio}, ViewportSize: {viewportSize.Width}x{viewportSize.Height}");
+                }
+            }
+            return _cachedMvp.Value;
+        }
+
+        public void InvalidateCache()
+        {
+            _cachedMvp = null;
+            _lastViewportSize = Size.Empty;
+            Console.WriteLine("MVP cache invalidated");
+        }
+    }
+}

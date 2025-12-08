@@ -1,0 +1,38 @@
+﻿using IGX.Geometry.DataStructure;
+using IGX.ViewControl.Buffer.Common;
+using IGX.ViewControl.Render.Materials;
+using OpenTK.Mathematics;
+
+namespace IGX.ViewControl.Render
+{
+    public class RendererVector
+    {
+        private readonly RendererInstancedMesh<Vertex, uint, MatColInstance> _arrow_Resource;
+
+        public RendererVector(RendererInstancedMesh<Vertex, uint, MatColInstance> resource, List<DrawElementsIndirectCommand> instances)
+        {
+            _arrow_Resource = resource;
+        }
+
+        public void Draw(Matrix4 view, Matrix4 projection, MatColInstance[] instanceData, Shader shader, bool setNew = false)
+        {
+            if (instanceData == null || instanceData.Length == 0)
+                return;
+            if (setNew)
+            {
+                _arrow_Resource.SetData(instanceData);
+            }
+            else
+            {
+                _arrow_Resource.UpdateInstanceBuffer(instanceData);
+            }
+
+            using (shader.Use())
+            {
+                shader.SetViewMatrix(view);
+                shader.SetProjectionMatrix(projection);
+                _arrow_Resource.Renderer(view, projection, instanceData, shader, false);
+            }
+        }
+    }
+}

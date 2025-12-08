@@ -1,0 +1,129 @@
+﻿using IGX.ViewControl.Render;
+using OpenTK.GLControl;
+using OpenTK.Graphics.OpenGL4;
+using OpenTK.Mathematics;
+using System.Diagnostics;
+
+namespace IGX.ViewControl
+{
+    public class PostProcessPass : IRenderer, IDisposable
+    {
+        private readonly IgxViewAPI _apis;
+        //private readonly GLControl _glControl;
+        private readonly GBufferPass _gBufferPass; // 의존성 주입
+        private Shader? _outlinePostShader;
+        private Quad? _quad;
+        private bool _isDisposed;
+        private readonly object _disposeLock = new object();
+
+        //public PostProcessPass(IgxViewAPI apis, GLControl glControl, GBufferPass gBufferPass)
+        public PostProcessPass(IgxViewAPI apis, GBufferPass gBufferPass)
+
+        {
+            _apis = apis;
+            //_glControl = glControl;
+            _gBufferPass = gBufferPass;
+        }
+
+        public void Initialize(int width, int height)
+        {
+            try
+            {
+                //_glControl.MakeCurrent();
+                _outlinePostShader = new Shader(ShaderSource.quadVtx, ShaderSource.outlinePostFrg, false);
+                _quad = new Quad();
+                _quad.InitializeQuad();
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine($"ErrorCheck initializing PostProcessPass: {ex.Message}");
+                Dispose();
+                throw;
+            }
+        }
+
+        public void Draw(IMyCamera camera, bool draw)
+        {
+            if (_isDisposed) return;
+            //_glControl.MakeCurrent();
+
+            var gbuffer = _gBufferPass.Gbuffer;
+            if (gbuffer == null || !gbuffer.IsValid()) return;
+
+            // OpenGL 상태 저장
+            int[] savedViewport = new int[4];
+            GL.GetInteger(GetPName.Viewport, savedViewport);
+            int savedDepthTest = GL.IsEnabled(EnableCap.DepthTest) ? 1 : 0;
+            int savedCullFace = GL.IsEnabled(EnableCap.CullFace) ? 1 : 0;
+            int savedBlend = GL.IsEnabled(EnableCap.Blend) ? 1 : 0;
+
+            // G-Buffer의 깊이 버퍼를 기본 프레임버퍼로 복사 (보조 렌더링을 위해)
+            GL.BindFramebuffer(FramebufferTarget.ReadFramebuffer, gbuffer.FboHandle);
+            GL.BindFramebuffer(FramebufferTarget.DrawFramebuffer, 0);
+            GL.BlitFramebuffer(0, 0, camera.ViewportWidth, camera.ViewportHeight, 0, 0, camera.ViewportWidth, camera.ViewportHeight, ClearBufferMask.DepthBufferBit, BlitFramebufferFilter.Nearest);
+            GL.BindFramebuffer(FramebufferTarget.Framebuffer, 0);
+
+            // OpenGL 상태 설정
+            GL.Disable(EnableCap.DepthTest);
+            GL.DepthMask(false);
+            GL.Disable(EnableCap.CullFace);
+            GL.Enable(EnableCap.Blend);
+            GL.BlendFunc(BlendingFactor.SrcAlpha, BlendingFactor.OneMinusSrcAlpha);
+            GL.Viewport(0, 0, camera.ViewportWidth, camera.ViewportHeight);
+
+            using (_outlinePostShader!.Use())
+            {
+                gbuffer.Position?.Use(TextureUnit.Texture0, _outlinePostShader, "gPosition");
+                gbuffer.Normal?.Use(TextureUnit.Texture1, _outlinePostShader, "gNormal");
+                gbuffer.Color?.Use(TextureUnit.Texture2, _outlinePostShader, "gAlbedo");
+                gbuffer.ObjectID?.Use(TextureUnit.Texture3, _outlinePostShader, "gObjectID");
+                gbuffer.DepthStencil?.Use(TextureUnit.Texture4, _outlinePostShader, "gDepthStencil");
+
+                _outlinePostShader.SetUniformIfExist("uScreenSize", new Vector2(camera.ViewportWidth, camera.ViewportHeight));
+                _outlinePostShader.SetUniformIfExist("uViewPosition", camera.Position);
+                _outlinePostShader.SetUniformIfExist("uLightDirection", _apis.Lighting.Direction);
+                _outlinePostShader.SetUniformIfExist("uLightColor", _apis.Lighting.Color);
+                _outlinePostShader.SetUniformIfExist("uAmbientStrength", RendererConstants.AmbientStrength);
+                _outlinePostShader.SetUniformIfExist("uSpecularStrength", RendererConstants.SpecularStrength);
+                _outlinePostShader.SetUniformIfExist("uShininess", RendererConstants.Shininess);
+                _outlinePostShader.SetUniformIfExist("uEdgelineColor", _apis.Shading.EdgeColor);
+                _outlinePostShader.SetUniformIfExist("uEdgelineThickness", _apis.Shading.EdgeThickness);
+                _outlinePostShader.SetUniformIfExist("uDrawEdge", _apis.Shading.DisplayEdge ? 1 : 0);
+
+                _quad!.DrawQuad();
+            }
+
+            // OpenGL 상태 복원
+            GL.Viewport(savedViewport[0], savedViewport[1], savedViewport[2], savedViewport[3]);
+            if (savedDepthTest == 1) GL.Enable(EnableCap.DepthTest); else GL.Disable(EnableCap.DepthTest);
+            if (savedCullFace == 1) GL.Enable(EnableCap.CullFace); else GL.Disable(EnableCap.CullFace);
+            if (savedBlend == 1) GL.Enable(EnableCap.Blend); else GL.Disable(EnableCap.Blend);
+        }
+
+        public void Resize(int width, int height)
+        {
+            if (_isDisposed) return;
+            //_glControl.MakeCurrent();
+            GL.Viewport(0, 0, width, height);
+        }
+
+        /// <summary>
+        /// G-BufferPass가 소유한 리소스를 정리.
+        /// </summary>
+        public void Dispose()
+        {
+            lock (_disposeLock)
+            {
+                if (_isDisposed) return;
+
+                //_glControl.MakeCurrent();
+                _outlinePostShader?.Dispose();
+                _quad?.Dispose();
+
+                _outlinePostShader = null;
+                _quad = null;
+                _isDisposed = true;
+            }
+        }
+    }
+}

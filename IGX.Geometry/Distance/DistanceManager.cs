@@ -1,0 +1,430 @@
+﻿using OpenTK.Mathematics;
+using IGX.Geometry.Common;
+using IGX.Geometry.ConvexHull;
+
+namespace IGX.Geometry.Distance
+{
+    public class Result2f
+    {
+        public float sqrDistance;
+        public float distance;
+        public float[] parameter = new float[3];   // 첫번째 기하 요소상 최단 거리점의 parameter
+        public float[] parameter2 = new float[3];  // 두번째 기하 요소상 최단 거리점의 parameter
+        public Vector2[] closest = new Vector2[2]; // closest point
+    }
+
+    public class Result3f
+    {
+        public float sqrDistance;
+        public float distance;
+        public float[] parameter = new float[3];   // 첫번째 기하 요소상 최단 거리점의 parameter
+        public float[] parameter2 = new float[3];  // 두번째 기하 요소상 최단 거리점의 parameter
+        public Vector3[] closest = new Vector3[2]; // closest point
+    }
+
+    /// <summary>
+    /// 두 기하 요소간 최단 거리
+    /// 최단 거리로 연결하는 각 기하요소 위의 점
+    /// 각 기하 요소상 최단 거리 점의 parameter
+    /// </summary>
+    public struct DistanceManager
+    {
+        /// <summary>
+        /// 점 P와 Axis Aligned Cube 사이의 가장 가까운 거리
+        /// </summary>
+        /// <param name="point"></param>
+        /// <param name="box"></param>
+        /// <returns>최단거리, box위의 최단거리점</returns>
+        public static Result2f PointToAABB(Vector2 point, AABB2 box)
+        {
+            DistancePoint2AABB2 paQuery = new(point, box);
+            return paQuery.Compute();
+        }
+
+        /// <summary>
+        /// 점 P와 Axis Aligned Cube 사이의 가장 가까운 거리
+        /// </summary>
+        /// <param name="point"></param>
+        /// <param name="box"></param>
+        /// <returns>최단거리, box위의 최단거리점</returns>
+        public static Result3f PointToAABB(Vector3 point, AABB3 box)
+        {
+            DistancePoint3AABB3 paQuery = new(point, box);
+            return paQuery.Compute();
+        }
+
+        /// <summary>
+        /// 점 P와 Object Oriented Bounding Cube 사이의 가장 가까운 거리
+        /// </summary>
+        /// <param name="point"></param>
+        /// <param name="box"></param>
+        /// <returns>최단거리, box위의 최단거리점</returns>
+        public static Result2f PointToBox(Vector2 point, OOBB2 box)
+        {
+            DistancePoint2OOBB2 paQuery = new(point, box);
+            return paQuery.Compute();
+        }
+
+        /// <summary>
+        /// 점 P와 Object Oriented Bounding Cube 사이의 가장 가까운 거리
+        /// </summary>
+        /// <param name="point"></param>
+        /// <param name="box"></param>
+        /// <returns>최단거리, box위의 최단거리점</returns>
+        public static Result3f PointToBox(Vector3 point, OOBB3 box)
+        {
+            DistancePoint3OOBB3 paQuery = new(point, box);
+            return paQuery.Compute();
+        }
+
+        /// <summary>
+        /// 점 P와 circle 사이의 가장 가까운 거리
+        /// </summary>
+        /// <param name="point"></param>
+        /// <param name="circle"></param>
+        /// <returns></returns>
+        /// <param name="point"></param>
+        /// <param name="circle"></param>
+        /// <returns>최단거리, circle위의 최단거리 점</returns>
+        public static Result3f PointToCircle(Vector3 point, Circle3 circle)
+        {
+            DistancePoint3Circle3 paQuery = new(point, circle);
+            return paQuery.Compute();
+        }
+
+        /// <summary>
+        /// for 2D plane, 점 p에서 직선 까지의 수직 거리
+        /// </summary>
+        /// <param name="point">input point</param>
+        /// <param name="origin">선의 시작점</param>
+        /// <param name="direction">선의 방향 벡터/param>
+        /// <returns>최단거리, 직선위의 최단거리점, 직선상의 parameter</returns>
+        public static Result2f PointToLine(Vector2 point, Vector2 origin, Vector2 direction)
+        {
+            Line2f line = new(origin, direction);
+            DistancePoint2Line2 paQuery = new(point, line);
+            return paQuery.Compute();
+        }
+
+        /// <summary>
+        /// for 2D plane, 점 p에서 직선 까지의 수직 거리
+        /// <param name="point">input point</param>
+        /// <param name="line">점을 투영할 직선</param>
+        /// <returns>최단거리, 직선위의 최단거리점, 직선상의 parameter</returns>
+        public static Result2f PointToLine(Vector2 point, Line2f line)
+        {
+            DistancePoint2Line2 paQuery = new(point, line);
+            return paQuery.Compute();
+        }
+
+        /// <summary>
+        /// for 3D plane, 점 p에서 직선 까지의 수직 거리
+        /// </summary>
+        /// <param name="point">input point</param>
+        /// <param name="origin">선의 시작점</param>
+        /// <param name="direction">선의 방향 벡터/param>
+        /// <returns>최단거리, 직선위의 최단거리점, 직선상의 parameter</returns>
+        public static Result3f PointToLine(Vector3 point, Vector3 origin, Vector3 direction)
+        {
+            Line3f line = new(origin, direction);
+            DistancePoint3Line3 paQuery = new(point, line);
+            return paQuery.Compute();
+        }
+
+        /// <summary>
+        /// for 3D plane, 점 p에서 직선 까지의 수직 거리
+        /// <param name="point">input point</param>
+        /// <param name="line">점을 투영할 직선</param>
+        /// <returns>최단거리, 직선위의 최단거리점, 직선상의 parameter</returns>
+        public static Result3f PointToLine(Vector3 point, Line3f line)
+        {
+            DistancePoint3Line3 paQuery = new(point, line);
+            return paQuery.Compute();
+        }
+
+        /// <summary>
+        /// 점 p에서 평면까지 수직 거리
+        /// </summary>
+        /// <param name="point"></param>
+        /// <param name="plane"></param>
+        /// <returns>최단거리, 평면위의 최단거리점</returns>
+        public static float PointToPlane(Vector3 point, Plane3f plane)
+        {
+            //return Vector3.Dot(plane.norID, point) - plane.Distance;
+            return Vector3.Dot(plane.normal, point) - plane.distance;
+        }
+
+        /// <summary>
+        /// for 2D, 점 point에서 [P0, P1] 선선 까지의 최단 거리
+        /// bFiniteLine = true이면 직교하는 최단 거리
+        /// </summary>
+        /// <param name="point">input point</param>
+        /// <param name="P0">선/세그먼트의 시작점</param>
+        /// <param name="P1">선/세그먼트의 끝점</param>
+        /// <param name="bFiniteLine">default = false, true이면 세그먼트과 직교하는 최단 거리</param>
+        /// <returns></returns>
+        public static Result2f PointToSegment(Vector2 point, Vector2 P0, Vector2 P1, bool bFiniteLine = false)
+        {
+            Segment2f segment = new(P0, P1);
+            DistancePoint2Seg2 paQuery = new(point, segment);
+            return paQuery.Compute();
+        }
+
+        /// <summary>
+        /// for 2D, 점 point에서 [P0, P1] 선선 까지의 최단 거리
+        /// bFiniteLine = true이면 직교하는 최단 거리
+        /// </summary>
+        /// <param name="point">input point</param>
+        /// <param name="P0">선/세그먼트의 시작점</param>
+        /// <param name="P1">선/세그먼트의 끝점</param>
+        /// <param name="bFiniteLine">default = false, true이면 세그먼트과 직교하는 최단 거리</param>
+        /// <returns></returns>
+        public static Result3f PointToSegment(Vector3 point, Vector3 P0, Vector3 P1, bool bFiniteLine = false)
+        {
+            Segment3f segment = new(P0, P1);
+            DistancePoint3Seg3 paQuery = new(point, segment);
+            return paQuery.Compute();
+        }
+
+        /// <summary>
+        /// for 2D, 점 point에서 세그먼트 까지의 최단 거리
+        /// bFiniteLine = true이면 직교하는 최단 거리
+        /// </summary>
+        /// <param name="point">input point</param>
+        /// <param name="segment">세그먼트</param>
+        /// <param name="bFiniteLine">default = false, true이면 세그먼트과 직교하는 최단 거리</param>
+        /// <returns></returns>
+        public static Result2f PointToSegment(Vector2 point, Segment2f segment, bool bFiniteLine = false)
+        {
+            Vector2 from = segment.P0;
+            Vector2 to = segment.P1;
+            return PointToSegment(point, from, to, bFiniteLine);
+        }
+
+        /// <summary>
+        /// for 2D, 점 point에서 세그먼트 까지의 최단 거리
+        /// bFiniteLine = true이면 직교하는 최단 거리
+        /// </summary>
+        /// <param name="point">input point</param>
+        /// <param name="segment">세그먼트</param>
+        /// <param name="bFiniteLine">default = false, true이면 세그먼트과 직교하는 최단 거리</param>
+        /// <returns></returns>
+        public static Result3f PointToSegment(Vector3 point, Segment3f segment, bool bFiniteLine = false)
+        {
+            Vector3 from = segment.P0;
+            Vector3 to = segment.P1;
+            return PointToSegment(point, from, to, bFiniteLine);
+        }
+
+        /// <summary>
+        /// 3차원 공간상에서 point와 triangle 사이의 최단 거리
+        /// https://www.geometrictools.com/Documentation/DistancePoint3Triangle3.pdf
+        /// 3각형의 parametric 좌표계 s, t를 기준으로 삼각형 및 삼각형을 둘러싸고 있는 외곽을
+        /// 7개의 영역으로 분할하여 최단 거리 좌표를 판단
+        /// </summary>
+        /// <param name="point"></param>
+        /// <param name="triangle"></param>
+        public static Result3f PointToTriangle(Vector3 point, Triangle3f triangle)
+        {
+            DistancePoint3Triangle3 paQuery = new(point, triangle);
+            return paQuery.Compute();
+        }
+
+        /// <summary>
+        /// 2차원 공간상에서 point와 triangle 사이의 최단 거리
+        /// https://www.geometrictools.com/Documentation/DistancePoint3Triangle3.pdf
+        /// 3각형의 parametric 좌표계 s, t를 기준으로 삼각형 및 삼각형을 둘러싸고 있는 외곽을
+        /// 7개의 영역으로 분할하여 최단 거리 좌표를 판단
+        /// </summary>
+        /// <param name="point"></param>
+        /// <param name="triangle"></param>
+        public static Result2f PointToTriangle(Vector2 point, Triangle2 triangle)
+        {
+            DistancePoint2Triangle2 paQuery = new(point, triangle);
+            return paQuery.Compute();
+        }
+
+        /// <summary>
+        /// Ray에서 segment까지 최단 거리
+        /// </summary>
+        /// <param name="ray"></param>
+        /// <param name="segment"></param>
+        /// <returns></returns>
+        public static Result2f RayToSegment(Ray2f ray, Segment2f segment)
+        {
+            DistanceRay2Seg2 paQuery = new(ray, segment);
+            return paQuery.Compute();
+        }
+
+        /// <summary>
+        /// Ray에서 segment까지 최단 거리
+        /// </summary>
+        /// <param name="ray"></param>
+        /// <param name="segment"></param>
+        /// <returns></returns>
+        public static Result3f RayToSegment(Ray3f ray, Segment3f segment)
+        {
+            DistanceRay3Seg3 paQuery = new(ray, segment);
+            return paQuery.Compute();
+        }
+
+        /// <summary>
+        /// 두 세그먼트간의 최단 거리
+        /// </summary>
+        /// <param name="P0">segment1의 시작점</param>
+        /// <param name="P1">segment1의 끝점</param>
+        /// <param name="Q0">segment2의 시작점</param>
+        /// <param name="Q1">segment2의 끝점</param>
+        /// <returns></returns>
+        public static Result2f SegmentToSegment(Vector2 P0, Vector2 P1, Vector2 Q0, Vector2 Q1)
+        {
+            DistanceSeg2Seg2 ssQuery = new(new Segment2f(P0, P1), new Segment2f(Q0, Q1));
+            return ssQuery.Compute();
+        }
+
+        /// <summary>
+        /// 두 세그먼트간 최단 거리
+        /// </summary>
+        /// <param name="P0">세그먼트1 의 시작점</param>
+        /// <param name="P1">세그먼트1 의 끝점</param>
+        /// <param name="Q0">세그먼트2 의 시작점</param>
+        /// <param name="Q1">세그먼트2 의 끝점</param>
+        /// <returns></returns>
+        public static Result3f SegmentToSegment(Vector3 P0, Vector3 P1, Vector3 Q0, Vector3 Q1)
+        {
+            DistanceSeg3Seg3 ssQuery = new(new Segment3f(P0, P1), new Segment3f(Q0, Q1));
+            return ssQuery.Compute();
+        }
+
+        /// <summary>
+        /// 2D 평면상의 두 세그먼트간 최단 거리
+        /// </summary>
+        /// <param name="seg0">세그먼트 1</param>
+        /// <param name="seg1">세그먼트 2</param>
+        /// <param name="result">계산 결과</param>
+        /// <returns></returns>
+        public static Result2f SegmentToSegment(Segment2f seg0, Segment2f seg1)
+        {
+            return SegmentToSegment(seg0.P0, seg0.P1, seg1.P0, seg1.P1);
+        }
+
+        /// <summary>
+        /// 3D 공간상의 두 세그먼트간 최단 거리
+        /// </summary>
+        /// <param name="seg0">세그먼트 1</param>
+        /// <param name="seg1">세그먼트 2</param>
+        /// <param name="result">계산 결과</param>
+        public static Result3f SegmentToSegment(Segment3f seg0, Segment3f seg1)
+        {
+            return SegmentToSegment(seg0.P0, seg0.P1, seg1.P0, seg1.P1);
+        }
+
+        /// <summary>
+        /// 세그먼트와 삼각형간 최단 거리
+        /// </summary>
+        /// <param name="segment"></param>
+        /// <param name="triangle"></param>
+        /// <returns></returns>
+        public static Result3f SegmentToTriangle(Segment3f segment, Triangle3f triangle)
+        {
+            DistanceSeg3Triangle3 ssQuery = new(segment, triangle);
+            return ssQuery.Compute();
+        }
+
+        /// <summary>
+        /// 두 삼각형간 최단 거리
+        /// </summary>
+        /// <param name="tri0"></param>
+        /// <param name="tri1"></param>
+        /// <returns></returns>
+        public static Result3f TriangleToTriangle(Triangle3f triangle0, Triangle3f triangle1)
+        {
+            DistanceTriangle3Triangle3 ssQuery = new(triangle0, triangle1);
+            return ssQuery.Compute();
+        }
+
+        /// <summary>
+        /// 두 2차원 직선(무한)간 최단 거리
+        /// </summary>
+        /// <param name="line0"></param>
+        /// <param name="line1"></param>
+        /// <returns></returns>
+        public static Result2f LineToLine(Line2f line0, Line2f line1)
+        {
+            DistanceLine2Line2 ssQuery = new(line0, line1);
+            return ssQuery.Compute();
+        }
+
+        /// <summary>
+        /// 두 3차원 직선(무한)간 최단 거리
+        /// https://www.geometrictools.com/Documentation/DistanceLine3Line3.pdf
+        /// </summary>
+        /// <param name="line0"></param>
+        /// <param name="line1"></param>
+        public static Result3f LineToLine(Line3f line0, Line3f line1)
+        {
+            DistanceLine3Line3 ssQuery = new(line0, line1);
+            return ssQuery.Compute();
+        }
+
+        /// <summary>
+        /// Line과 Ray간 최단 거리
+        /// </summary>
+        /// <param name="line"></param>
+        /// <param name="ray"></param>
+        /// <returns></returns>
+        public static Result2f LineToRay(Line2f line, Ray2f ray)
+        {
+            DistanceLine2Ray2 ssQuery = new(line, ray);
+            return ssQuery.Compute();
+        }
+
+        /// <summary>
+        /// Line과 Ray간 최단 거리
+        /// </summary>
+        /// <param name="line"></param>
+        /// <param name="ray"></param>
+        /// <returns></returns>
+        public static Result3f LineToRay(Line3f line, Ray3f ray)
+        {
+            DistanceLine3Ray3 ssQuery = new(line, ray);
+            return ssQuery.Compute();
+        }
+
+        /// <summary>
+        /// line과 segment간 최단 거리
+        /// </summary>
+        /// <param name="line"></param>
+        /// <param name="segment"></param>
+        /// <returns></returns>
+        public static Result2f LineToSegment(Line2f line, Segment2f segment)
+        {
+            DistanceLine2Seg2 ssQuery = new(line, segment);
+            return ssQuery.Compute();
+        }
+
+        /// <summary>
+        /// 라인과 세그먼트간 최단 거리
+        /// </summary>
+        /// <param name="line"></param>
+        /// <param name="segment"></param>
+        /// <returns></returns>
+        public static Result3f LineToSegment(Line3f line, Segment3f segment)
+        {
+            DistanceLine3Seg3 ssQuery = new(line, segment);
+            return ssQuery.Compute();
+        }
+
+        /// <summary>
+        /// 라인과 삼각형간 최단 거리
+        /// </summary>
+        /// <param name="line"></param>
+        /// <param name="triangle"></param>
+        /// <returns></returns>
+        public static Result3f LineToTriangle(Line3f line, Triangle3f triangle)
+        {
+            DistanceLine3Triangle3 ssQuery = new(line, triangle);
+            return ssQuery.Compute();
+        }
+    }
+}

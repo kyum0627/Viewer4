@@ -1,0 +1,150 @@
+﻿using OpenTK.Mathematics;
+using IGX.Geometry.DataStructure;
+using LibTessDotNet;
+using System;
+using System.Linq;
+using System.Collections.Generic;
+
+namespace IGX.Geometry.Tessellation
+{
+    public static class Facet2Mesh
+    {
+        public class TessellateResult
+        {
+            public Vector3[] vertices = Array.Empty<Vector3>();
+            public Vector3[] normals = Array.Empty<Vector3>();
+            public List<int> indices = new();
+        }
+        public static TessellateResult Tessellate(Facet3 facet)
+        {
+            List<Vector3> vtxs = new();
+            List<Vector3> nors = new();
+            List<int> inds = new(); // List<uint>로 수정
+            List<Loop3> contours = new()
+            {
+                facet.Outter
+            };
+            if (facet.Outter.Vertices.Length == 3 && facet.Holes.Count == 0)
+            {// hole 없는 3개의 정점
+                AddTriangle(ref vtxs, ref nors, ref inds, contours[0].Vertices[0], contours[0].Vertices[1], contours[0].Vertices[2]);
+            }
+            else if (facet.Outter.Vertices.Length == 4 && facet.Holes.Count == 0)
+            {// hole 없는 4개의 정점으로 이루어진 경우
+                AddQuad(ref vtxs, ref nors, ref inds, facet.Outter.Vertices);
+            }
+            else
+            { // Hole이 있거나 5개 이상의 정점으로 구성된 경우. earcut 등의 방법으로 tessellation이 필요함
+                AddGeneralPolygon(facet, vtxs, nors, inds, contours);
+            }
+
+            TessellateResult res = new();
+            res.vertices = vtxs.ToArray();
+            res.normals = nors.ToArray();
+            res.indices = inds.ToList();
+            return res;
+        }
+        static void AddGeneralPolygon(Facet3 facet, List<Vector3> poss, List<Vector3> nors, List<int> inds, List<Loop3> contours)
+        {
+            if (facet.Holes.Count > 1)// 홀 처리
+            {
+                contours.AddRange(facet.Holes);
+            }
+
+            Vector3 center = facet.box.Center;
+            Loop3[] adjustedContours = contours
+                .Select(v => new Loop3(v.Vertices
+                    .Select(vt => new Vertex(vt.Position - center, vt.Normal)).ToArray(), v.IsHole))
+                .ToArray();
+            TessellateResult tessresult = Facet2Mesh.Tessellate(adjustedContours);
+            if (tessresult != null)
+            {
+                poss.AddRange(tessresult.vertices.Select(v => v + center));// 좌표 복구  
+                nors.AddRange(tessresult.normals);
+                inds.AddRange(tessresult.indices);//.Select(i => i)); // 형변환 추가
+            }
+        }
+        static void AddTriangle(ref List<Vector3> poss, ref List<Vector3> nors, ref List<int> inds, Vertex v0, Vertex v1, Vertex v2, int o = 0)
+        {
+            poss.Add(v0.Position);
+            poss.Add(v1.Position);
+            poss.Add(v2.Position);
+            nors.Add(v0.Normal);
+            nors.Add(v1.Normal);
+            nors.Add(v2.Normal);
+            inds.Add(o);
+            inds.Add(o + 1);
+            inds.Add(o + 2);
+        }
+        static void AddQuad(ref List<Vector3> vtxs, ref List<Vector3> nors, ref List<int> inds, Vertex[] vertices)
+        {
+            Vertex v0 = vertices[0];
+            Vertex v1 = vertices[1];
+            Vertex v2 = vertices[2];
+            Vertex v3 = vertices[3];
+            AddTriangle(ref vtxs, ref nors, ref inds, v0, v1, v2, 0);
+            AddTriangle(ref vtxs, ref nors, ref inds, v3, v0, v2, 3);
+        }
+        public static TessellateResult Tessellate(Loop3[] contours)
+        {
+            Tess theTess = new();
+            bool isValid = false;
+
+            // 미리 인덱스 크기 할당
+            int nvtxs = contours.Sum(c => c.Vertices.Length >= 3 ? c.Vertices.Length : 0);
+
+            // TessellateResult를 미리 할당하여 메모리 할당을 최적화
+            TessellateResult result = new();
+            result.indices.Capacity = nvtxs * 3;  // 삼각형 인덱스 * 3
+            List<Vector3> positionList = new(nvtxs);
+            List<Vector3> normalsList = new(nvtxs);
+            Vec3 normal = new(contours[0].Vertices[0].Normal.X, contours[0].Vertices[0].Normal.Y, contours[0].Vertices[0].Normal.Z);
+
+            // 각 컨투어에 대해 Tessellate를 준비
+            foreach (Loop3 contour in contours)
+            {
+                if (contour.Vertices.Length < 3)
+                {
+                    continue;
+                }
+
+                Vertex[] distinctVertices = contour.Vertices.DistinctBy(v => v.Position).ToArray();
+                if (distinctVertices.Length < 3)
+                {
+                    continue;
+                }
+                // ContourVertex로 변환
+                ContourVertex[] cv = distinctVertices
+                    .Select(v => new ContourVertex(new Vec3(v.Position.X, v.Position.Y, v.Position.Z), v.Normal))
+                    .ToArray();
+                theTess.AddContour(cv);
+                isValid = true;
+            }
+            if (!isValid)
+            {
+                return result; // 컨투어가 없으면 빈 결과 반환
+            }
+
+            // TessellationManager 호출 (폴리곤 생성)
+            theTess.Tessellate(
+                WindingRule.NonZero,
+                ElementType.Polygons,
+                3,
+                CombineNormals,
+                normal
+            );
+            result.vertices = theTess.Vertices.Select(v => new Vector3(v.Position.X, v.Position.Y, v.Position.Z)).ToArray();
+            result.normals = Enumerable.Repeat(new Vector3(normal.X, normal.Y, normal.Z), theTess.VertexCount).ToArray();
+            result.indices = theTess.Elements.Select(e => e).ToList();
+            return result;
+        }
+        private static object CombineNormals(Vec3 position, object[] data, float[] weights)
+        {
+            int maxIndex = weights.Select((w, i) => (weight: w, index: i))
+                                  .OrderByDescending(p => p.weight)
+                                  .Select(p => p.index)
+                                  .FirstOrDefault();
+
+            return data[maxIndex];
+        }
+    }
+}

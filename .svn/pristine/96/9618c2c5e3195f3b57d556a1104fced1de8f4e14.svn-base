@@ -1,0 +1,85 @@
+﻿using IGX.ViewControl.Buffer.Common;
+using IGX.ViewControl.Render;
+using OpenTK.GLControl;
+using OpenTK.Graphics.OpenGL4;
+using System.Diagnostics;
+
+namespace IGX.ViewControl
+{
+    public class ForwardPass : IRenderer
+    {
+        private readonly IgxViewAPI _apis;
+        //private readonly GLControl _glControl;
+        private Shader? _forwardShader;
+        private bool _isDisposed;
+        private readonly object _disposeLock = new object();
+
+        public ForwardPass(IgxViewAPI apis)//, GLControl glControl)
+        {
+            _apis = apis;
+            //_glControl = glControl;
+        }
+
+        public void Initialize(int width, int height)
+        {
+            try
+            {
+                //_glControl.MakeCurrent();
+                _forwardShader = new Shader(ShaderSource.forwardVtx, ShaderSource.forwardFrg, false);
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine($"ErrorCheck initializing ForwardPass: {ex.Message}");
+                Dispose();
+                throw;
+            }
+        }
+
+        public void Draw(IMyCamera camera, bool _)
+        {
+            if (_isDisposed) return;
+            if (_forwardShader == null) return;
+
+            //_glControl.MakeCurrent();
+
+            GLState.SetDepthTest(true);
+            GLState.SetDepthMask(true);
+            GLState.DepthFunc(DepthFunction.Less);
+            GLState.SetCullFace(true, TriangleFace.Back);
+            GLState.SetClearColor(_apis.BackGroundColor);
+            GLState.ClearDrawingBuffer();
+            using (_forwardShader.Use())
+            {
+                // 유니폼 변수 설정
+                _forwardShader.SetUniformIfExist("uView", camera.ViewMatrix);
+                _forwardShader.SetUniformIfExist("uProjection", camera.ProjectionMatrix);
+                _forwardShader.SetUniformIfExist("uViewPosition", camera.Position);
+                _forwardShader.SetUniformIfExist("uLightDirection", _apis.Lighting.Direction);
+                _forwardShader.SetUniformIfExist("uLightColor", _apis.Lighting.Color);
+                _forwardShader.SetUniformIfExist("uAmbientStrength", RendererConstants.AmbientStrength);
+                _forwardShader.SetUniformIfExist("uSpecularStrength", RendererConstants.SpecularStrength);
+                _forwardShader.SetUniformIfExist("uShininess", RendererConstants.Shininess);
+                _forwardShader.SetUniformIfExist("shadeMode", (int)_apis.Shading.Mode);
+                _apis.RenderManager.RenderAllModels(_forwardShader);
+            }
+        }
+
+        public void Resize(int width, int height)
+        { // Frame Buffer를 사용하지 않으므로 무의미
+        }
+
+        public void Dispose()
+        {
+            lock (_disposeLock)
+            {
+                if (_isDisposed) return;
+
+                //_glControl.MakeCurrent();
+                _forwardShader?.Dispose();
+                _forwardShader = null;
+
+                _isDisposed = true;
+            }
+        }
+    }
+}

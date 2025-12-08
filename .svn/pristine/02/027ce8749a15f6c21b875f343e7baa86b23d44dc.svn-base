@@ -1,0 +1,63 @@
+﻿using System;
+using OpenTK.Mathematics;
+using IGX.Geometry.Common;
+
+namespace IGX.Geometry.Distance
+{
+    // https://www.geometrictools.com/Downloads/Downloads.html
+
+    public class DistanceLine2Line2
+    {
+        Line2f line0;
+        Line2f line1;
+
+        public DistanceLine2Line2(Line2f l1, Line2f l2)
+        {
+            line1 = l2;
+            line0 = l1;
+            Compute();
+        }
+
+        public Result2f Compute()
+        {
+            Result2f result = new();
+            Vector2 diff = line0.origin - line1.origin;
+            float a01 = -Vector2.Dot(line0.direction, line1.direction);
+            float b0 = Vector2.Dot(diff, line0.direction);
+            float c = diff.LengthSquared;
+            float det = (float)Math.Abs(1.0f - (a01 * a01));
+            float b1, s0, s1, sqrDist;
+
+            if (det > MathUtil.ZeroTolerance)
+            {
+                // 평행하지 않음
+                b1 = -Vector2.Dot(diff, line1.direction);
+                float invDet = 1f / det;
+                s0 = ((a01 * b1) - b0) * invDet;
+                s1 = ((a01 * b0) - b1) * invDet;
+                sqrDist = 0f;
+            }
+            else
+            {   // parallel, 다른 가까운 점 선택
+                s0 = -b0;
+                s1 = 0f;
+                sqrDist = (b0 * s0) + c;
+
+                // 수치계산 오류 보정
+                if (sqrDist < 0f)
+                {
+                    sqrDist = 0f;
+                }
+            }
+
+            result.parameter[0] = s0;
+            result.parameter2[0] = s1;
+            result.closest[0] = line0.origin + (s0 * line0.direction);
+            result.closest[1] = line1.origin + (s1 * line1.direction);
+            result.sqrDistance = sqrDist;
+            result.distance = (float)Math.Sqrt(result.sqrDistance);
+
+            return result;
+        }
+    }
+}

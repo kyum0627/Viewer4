@@ -1,0 +1,227 @@
+﻿using IGX.Geometry.DataStructure;
+using IGX.ViewControl.Buffer;
+using OpenTK.Graphics.OpenGL4;
+using OpenTK.Mathematics;
+using System.Diagnostics;
+
+namespace IGX.ViewControl.Render
+{
+    public class RendererInstancedMesh<Tvertex, VIndex, Minstance> : IDisposable 
+        where Tvertex : struct
+        where VIndex : struct
+        where Minstance : struct
+    {
+        private readonly ElementBuffer<Tvertex, VIndex> buffer;
+        private readonly ArrayBuffer<Minstance>? _ibo;
+        private readonly object _lockObject = new();
+        private bool _isDisposed = false;
+        public int IndexCount => buffer?.IndexCount ?? 0;
+        public int InstanceCount => _ibo?.Count ?? 0;
+
+        public RendererInstancedMesh(ReadOnlySpan<Tvertex> vertices, ReadOnlySpan<VIndex> indices, ReadOnlySpan<Minstance> initialInstanceData)
+        {
+            if (vertices.IsEmpty)
+            {
+                throw new ArgumentException("Vertex data cannot be empty.", nameof(vertices));
+            }
+            if (indices.IsEmpty)
+            {
+                throw new ArgumentException("Index data cannot be empty.", nameof(indices));
+            }
+            lock (_lockObject)
+            {
+                try
+                {
+                    buffer = new ElementBuffer<Tvertex, VIndex>(vertices.ToArray(), indices.ToArray());
+                    Bind();
+                    _ibo = new ArrayBuffer<Minstance>(
+                        initialInstanceData.IsEmpty ? new Minstance[100] : initialInstanceData,
+                        BufferUsageHint.DynamicDraw,
+                        keepCpuData: true);
+                    _ibo.SetAttributes();
+                    Unbind();
+                    Debug.Assert(GL.GetError() == ErrorCode.NoError, "RendererInstancedMesh 생성자에서 OpenGL 오류 발생");
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"Error initializing RendererInstancedMesh: {ex.Message}");
+                    Dispose(true);
+                    throw;
+                }
+            }
+        }
+        public void UpdateData(ReadOnlySpan<Tvertex> vertices, ReadOnlySpan<VIndex> indices)
+        {
+            if (_isDisposed)
+            {
+                throw new ObjectDisposedException(nameof(RendererInstancedMesh<Tvertex, VIndex, Minstance>));
+            }
+            if (vertices.IsEmpty)
+            {
+                Console.WriteLine("Warning: No vertices to update.");
+                return;
+            }
+            if (indices.IsEmpty)
+            {
+                Console.WriteLine("Warning: No indices to update.");
+                return;
+            }
+
+            lock (_lockObject)
+            {
+                try
+                {
+                    buffer.UpdateVertices(0, vertices);
+                    buffer.UpdateIndices(0, indices);
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"Error updating vertex/index data: {ex.Message}");
+                    throw;
+                }
+            }
+        }
+
+        public void UpdateInstanceBuffer(Minstance[] instanceData)
+        {
+            _ibo?.UpdateData(instanceData, 0);
+        }
+        public void UpdateInstanceBuffer(Minstance[] instanceData, int offset, int count)
+        {
+            if (offset < 0 || count <= 0 || offset + count > instanceData.Length) throw new ArgumentException("잘못된 오프셋 또는 카운트입니다.");
+            _ibo?.UpdateData(instanceData.Skip(offset).Take(count).ToArray(), offset);
+        }
+        public void UpdateInstanceBuffer(ReadOnlySpan<Minstance> instanceData, int offset = 0)
+        {
+            if (_isDisposed)
+            {
+                throw new ObjectDisposedException(nameof(RendererInstancedMesh<Tvertex, VIndex, Minstance>));
+            }
+            if (instanceData.IsEmpty)
+            {
+                Console.WriteLine("Warning: No instance data to update.");
+                return;
+            }
+            if (offset < 0 || offset + instanceData.Length > InstanceCount)
+            {
+                throw new ArgumentException($"Invalid offset ({offset}) or data length ({instanceData.Length}) for instance _instancedBuffer size ({InstanceCount}).");
+            }
+
+            lock (_lockObject)
+            {
+                try
+                {
+                    _ibo?.UpdateData(instanceData, offset);
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"Error updating instance data: {ex.Message}");
+                    throw;
+                }
+            }
+        }
+        public void SetData(ReadOnlySpan<Minstance> instanceData)
+        {
+            if (_isDisposed)
+            {
+                throw new ObjectDisposedException(nameof(RendererInstancedMesh<Tvertex, VIndex, Minstance>));
+            }
+            if (instanceData.IsEmpty)
+            {
+                Console.WriteLine("Warning: No instance data to set.");
+                return;
+            }
+
+            lock (_lockObject)
+            {
+                try
+                {
+                    _ibo?.SetData(instanceData);
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"Error setting instance data: {ex.Message}");
+                    throw;
+                }
+            }
+        }
+        private void Draw(PrimitiveType drawType, int instanceCount)
+        {
+            if (InstanceCount <= 0 || buffer.IndexCount <= 0) return;
+
+            buffer.Bind();
+            GL.DrawElementsInstanced(drawType, buffer.IndexCount, DrawElementsType.UnsignedInt, nint.Zero, instanceCount);
+            buffer.Unbind();
+        }
+        public void Renderer(Matrix4 view, Matrix4 projection, Minstance[] instanceData, Shader shader, bool setNew = false)
+        {
+            if (instanceData == null || instanceData.Length == 0)
+                return;
+            if (setNew)
+            {
+                _ibo!.SetData(instanceData);
+            }
+            else
+            {
+                UpdateInstanceBuffer(instanceData);
+            }
+
+            using (shader.Use())
+            {
+                shader.SetViewMatrix(view);
+                shader.SetProjectionMatrix(projection);
+                Draw(PrimitiveType.Triangles, instanceData.Length);
+            }
+        }
+        public void Bind()
+        {
+            if (_isDisposed)
+            {
+                throw new ObjectDisposedException(nameof(RendererInstancedMesh<Tvertex, VIndex, Minstance>));
+            }
+            lock (_lockObject)
+            {
+                buffer.Bind();
+            }
+        }
+
+        public void Unbind()
+        {
+            if (_isDisposed)
+            {
+                throw new ObjectDisposedException(nameof(RendererInstancedMesh<Tvertex, VIndex, Minstance>));
+            }
+            lock (_lockObject)
+            {
+                buffer.Unbind();
+            }
+        }
+        protected virtual void Dispose(bool disposing)
+        {
+            lock (_lockObject)
+            {
+                if (_isDisposed)
+                {
+                    return;
+                }
+
+                try
+                {
+                    buffer?.Dispose();
+                    _ibo?.Dispose();
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"Error disposing resources: {ex.Message}");
+                }
+                _isDisposed = true;
+            }
+        }
+
+        public void Dispose()
+        {
+            Dispose(true);
+            GC.SuppressFinalize(this);
+        }
+    }
+}

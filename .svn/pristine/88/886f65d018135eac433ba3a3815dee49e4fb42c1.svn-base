@@ -1,0 +1,123 @@
+﻿using IGX.ViewControl.Buffer.Common;
+using IGX.ViewControl.Render.Materials;
+using OpenTK.Graphics.OpenGL4;
+using System.Runtime.CompilerServices;
+
+namespace IGX.ViewControl.Buffer
+{
+    public sealed class IndirectBuffer<T> : MutableBuffer<T> where T : struct
+    {
+        private readonly object _lockObject = new();
+
+        public IndirectBuffer(ReadOnlySpan<T> data, BufferUsageHint usage, bool keepCpuData = true)
+            : base(data.ToArray(), BufferTarget.DrawIndirectBuffer, usage, keepCpuData)
+        {
+            if (!IsContextLikelyActive())
+            {
+                throw new InvalidOperationException("Cannot create IndirectBuffer without an active OpenGL context.");
+            }
+            try
+            {
+                if (!data.IsEmpty)
+                {
+                    SetData(data);
+                    CheckGLError();
+                }
+                ValidateCommandStruct();
+            }
+            catch (Exception ex)
+            {
+                throw new InvalidOperationException("Failed to initialize IndirectBuffer.", ex);
+            }
+        }
+
+        public void UpdateCommands(int startIndex, ReadOnlySpan<T> newData)
+        {
+            if (IsDisposed)
+            {
+                throw new ObjectDisposedException(nameof(IndirectBuffer<T>));
+            }
+            if (!keepCpuData)
+            {
+                throw new InvalidOperationException("CPU data is not maintained. Set keepCpuData to true in the constructor.");
+            }
+            if (startIndex < 0 || newData.Length < 0 || startIndex + newData.Length > Count)
+            {
+                throw new ArgumentOutOfRangeException(nameof(startIndex), "Command data range is out of bounds.");
+            }
+            if (newData.IsEmpty)
+            {
+                return;
+            }
+            if (!IsContextLikelyActive())
+            {
+                throw new InvalidOperationException("Cannot update command data without an active OpenGL context.");
+            }
+
+            var cpuData = CpuData;
+            newData.CopyTo(cpuData.Slice(startIndex, newData.Length));
+
+            try
+            {
+                lock (_lockObject)
+                {
+                    UpdateData(newData, startIndex * Unsafe.SizeOf<T>());
+                    CheckGLError();
+                }
+            }
+            catch (Exception ex)
+            {
+                throw new InvalidOperationException("Failed to update command _instancedBuffer data.", ex);
+            }
+        }
+
+        public void Bind()
+        {
+            if (IsDisposed)
+            {
+                throw new ObjectDisposedException(nameof(IndirectBuffer<T>));
+            }
+            if (!IsContextLikelyActive())
+            {
+                throw new InvalidOperationException("Cannot bind command _instancedBuffer without an active OpenGL context.");
+            }
+
+            lock (_lockObject)
+            {
+                GL.BindBuffer(BufferTarget.DrawIndirectBuffer, Handle);
+                CheckGLError();
+            }
+        }
+
+        private void ValidateCommandStruct()
+        {
+            int expectedSize = typeof(T) == typeof(DrawElementsIndirectCommand) ? 20 : typeof(T) == typeof(ArraysIndirectCommand) ? 16 : -1;
+            if (expectedSize != -1 && Unsafe.SizeOf<T>() != expectedSize)
+            {
+                Console.WriteLine($"Warning: Type '{typeof(T).Name}' size ({Unsafe.SizeOf<T>()} bytes) does not match expected draw command size ({expectedSize} bytes).");
+            }
+        }
+
+        private static bool IsContextLikelyActive()
+        {
+            try
+            {
+                GL.GetError();
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static void CheckGLError()
+        {
+            var error = GL.GetError();
+            if (error != ErrorCode.NoError)
+            {
+                throw new InvalidOperationException($"OpenGL error: {error}");
+            }
+        }
+    }
+}

@@ -1,0 +1,36 @@
+﻿using IGX.Geometry.DataStructure;
+using OpenTK.Mathematics;
+
+namespace IGX.ViewControl.Render
+{
+    public interface ILightingParameters // 렌더링 광원 파라미터.
+    {
+        Vector3 Direction { get; } // 광원 방향 벡터.
+        Vector3 Color { get; } // 광원 기본 색상.
+        Vector3 Ambient { get; } // 주변광 성분.
+        Vector3 Diffuse { get; } // 확산광 성분.
+        Vector3 Specular { get; } // 반사광 성분.
+        float Shininess { get; } // 물체 광택 정도.
+    }
+    public class LightingParameters : ILightingParameters
+    {
+        public Vector3 Direction { get; set; } = new Vector3(1, -2, 4).Normalized();
+        public Vector3 Color { get; set; } = MyColor.ToBuffer(System.Drawing.Color.White).Xyz;
+        public Vector3 Ambient { get; set; } = new Vector3(0.5f, 0.5f, 0.5f);        public Vector3 Diffuse { get; set; } = Vector3.One;
+        public Vector3 Specular { get; set; } = MyColor.ToBuffer(System.Drawing.Color.White).Xyz;
+        public float Shininess { get; set; } = RendererConstants.Shininess;
+        public void SetLightingUniforms(ILightingParameters lightParams, IMyCamera camera, Shader shader)
+        {
+            using (shader!.Use())
+            {
+                var lightDirViewSpace = Vector3.TransformNormal(lightParams.Direction, camera.ViewMatrix);
+
+                shader.SetUniformIfExist("uLightDirection", lightDirViewSpace);
+                shader.SetUniformIfExist("uLightColor", lightParams.Color);
+                shader.SetUniformIfExist("uAmbientStrength", lightParams.Ambient);
+                shader.SetUniformIfExist("uSpecularStrength", lightParams.Specular);
+                shader.SetUniformIfExist("uShininess", lightParams.Shininess);
+            }
+        }
+    }
+}

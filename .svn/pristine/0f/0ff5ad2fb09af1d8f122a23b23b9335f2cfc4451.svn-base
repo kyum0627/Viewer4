@@ -1,0 +1,22 @@
+﻿using IGX.Geometry.Common;
+using OpenTK.Mathematics;
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Text;
+using System.Threading.Tasks;
+using System.Windows.Forms;
+
+namespace IGX.Selection3D.Scene
+{
+    public interface ISelectable
+    {
+        string Name { get; }
+        void Render();
+        bool HitTest(Ray3f ray, out float distance);
+        Vector3[] GetWorldCorners();
+        void OnSelected(bool state);
+        void OnHover(bool state);
+        bool Hovered { get; }
+    }
+}

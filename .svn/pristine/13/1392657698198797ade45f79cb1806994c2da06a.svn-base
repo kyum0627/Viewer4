@@ -1,0 +1,128 @@
+﻿using IGX.ViewControl.Buffer.Common;
+using OpenTK.Graphics.OpenGL4;
+using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
+
+namespace IGX.ViewControl.Buffer
+{
+    public class IndexBuffer<T> : MutableBuffer<T> where T : struct
+    {
+        public IndexBuffer(T[] data, BufferUsageHint usageHint, bool keepCpuData)
+            : base(data, BufferTarget.ElementArrayBuffer, usageHint, keepCpuData)
+        {
+        }
+
+        public void Draw(PrimitiveType primitiveType)
+        {
+            Draw(primitiveType, 0, Count);
+        }
+        public void Draw(PrimitiveType primitiveType, int offset, int count)
+        {
+            if (count == 0) return;
+
+            ExecuteDrawOperation(() =>
+            {
+                DrawElementsType drawType = GetDrawElementsType();
+                if (offset < 0 || count < 0 || offset + count > Count)
+                {
+                    throw new ArgumentOutOfRangeException("Invalid offset or count. The specified range is out of the _instancedBuffer's bounds.");
+                }
+
+                int byteOffset = offset * Marshal.SizeOf<T>();
+                GL.DrawElements(primitiveType, count, drawType, (nint)byteOffset);
+            });
+        }
+
+        public void DrawInstancedBaseInstance(PrimitiveType primitiveType, int count, int instanceCount, int baseInstance)
+        {
+            if (count == 0 || instanceCount == 0) return;
+
+            ExecuteDrawOperation(() =>
+            {
+                DrawElementsType drawType = GetDrawElementsType();
+                GL.DrawElementsInstancedBaseInstance(primitiveType, count, drawType, nint.Zero, instanceCount, baseInstance);
+            });
+        }
+
+        public DrawElementsType GetDrawElementsType()
+        {
+            if (typeof(T) == typeof(uint))
+            {
+                return DrawElementsType.UnsignedInt;
+            }
+            if (typeof(T) == typeof(ushort))
+            {
+                return DrawElementsType.UnsignedShort;
+            }
+            if (typeof(T) == typeof(byte))
+            {
+                return DrawElementsType.UnsignedByte;
+            }
+            throw new NotSupportedException($"Type '{typeof(T).Name}' is not a valid index _instancedBuffer type. Use uint, ushort, or byte.");
+        }
+        public void UpdateIndices(int startIndex, ReadOnlySpan<T> newIndices)
+        {
+            if (startIndex < 0 || newIndices.Length < 0 || startIndex + newIndices.Length > Count)
+            {
+                throw new ArgumentOutOfRangeException(nameof(startIndex), "Index range is out of bounds.");
+            }
+
+            if (newIndices.Length == 0) return; // 빈 데이터는 처리하지 않음
+
+            if (!IsContextLikelyActive())
+            {
+                throw new InvalidOperationException("Cannot update indices without an active OpenGL context.");
+            }
+
+            // CpuData 속성은 이미 lock을 처리하므로, Span<TInstance>를 안전하게 가져옴
+            var cpuData = CpuData;
+            if (cpuData.IsEmpty)
+            {
+                throw new InvalidOperationException("CPU _instancedBuffer is not maintained.");
+            }
+
+            // ReadOnlySpan<TInstance>를 Span<TInstance>로 복사
+            newIndices.CopyTo(cpuData.Slice(startIndex, newIndices.Length));
+
+            try
+            {
+                // GPU에 범위 동기화
+                UpdateData(newIndices, (nint)(startIndex * Unsafe.SizeOf<T>()));
+            }
+            catch (InvalidOperationException ex)
+            {
+                throw new InvalidOperationException("Failed to update indices in GPU _instancedBuffer.", ex);
+            }
+        }
+        private void ExecuteDrawOperation(Action drawAction)
+        {
+            if (!IsContextLikelyActive())
+            {
+                throw new InvalidOperationException("Cannot draw without an active OpenGL context.");
+            }
+
+            try
+            {
+                Bind();
+                drawAction();
+                Unbind();
+            }
+            catch (InvalidOperationException ex)
+            {
+                throw new InvalidOperationException("Failed to execute draw operation.", ex);
+            }
+        }
+        private static bool IsContextLikelyActive()
+        {
+            try
+            {
+                GL.GetError();
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+    }
+}

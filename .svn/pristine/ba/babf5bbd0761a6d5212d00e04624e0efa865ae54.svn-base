@@ -1,0 +1,37 @@
+﻿using IGX.Geometry.DataStructure;
+using System;
+using System.Collections.Generic;
+
+namespace IGX.Geometry.Common.OpenTKextension
+{
+    public class VertexEqualityComparer : IEqualityComparer<Vertex>
+    {
+        private readonly float _positionTolerance;
+        private readonly float _normalTolerance;
+
+        public VertexEqualityComparer(float positionTolerance, float normalTolerance)
+        {
+            _positionTolerance = positionTolerance;
+            _normalTolerance = normalTolerance;
+        }
+
+        public bool Equals(Vertex v1, Vertex v2)
+        {
+            bool positionEquals = Math.Abs(v1.Position.X - v2.Position.X) < _positionTolerance &&
+                                  Math.Abs(v1.Position.Y - v2.Position.Y) < _positionTolerance &&
+                                  Math.Abs(v1.Position.Z - v2.Position.Z) < _positionTolerance;
+
+            bool normalEquals = Math.Abs(v1.Normal.X - v2.Normal.X) < _normalTolerance &&
+                                Math.Abs(v1.Normal.Y - v2.Normal.Y) < _normalTolerance &&
+                                Math.Abs(v1.Normal.Z - v2.Normal.Z) < _normalTolerance;
+
+            return positionEquals && normalEquals;
+        }
+
+        public int GetHashCode(Vertex v)
+        {
+            return HashCode.Combine(v.Position.X.GetHashCode(), v.Position.Y.GetHashCode(), v.Position.Z.GetHashCode(),
+                                    v.Normal.X.GetHashCode(), v.Normal.Y.GetHashCode(), v.Normal.Z.GetHashCode());
+        }
+    }
+}

@@ -1,0 +1,76 @@
+﻿using OpenTK.Graphics.OpenGL4;
+using OpenTK.Mathematics;
+
+namespace IGX.ViewControl.Buffer.Common
+{
+    /// <summary>
+    /// OpenGL 상태를 캡처하고 복원하기 위한 불변(immutable) 레코드.
+    /// </summary>
+    public record GLStateSnapshot(
+        Vector4 ClearColor,
+        bool DepthTestEnabled,
+        bool ClipDistance0Enabled,
+        bool DepthMaskEnabled,
+        DepthFunction DepthFuncMode, // 새로 추가
+        bool CullFaceEnabled,
+        TriangleFace CullFaceMode,
+        FrontFaceDirection FrontFaceDirection,
+        bool BlendingEnabled,
+        BlendingFactor BlendingSrcFactor,
+        BlendingFactor BlendingDstFactor,
+        int BoundFramebuffer,
+        Vector4i Viewport)
+    {
+        /// <summary>
+        /// 현재 OpenGL의 모든 주요 상태를 직접 쿼리하여 GLStateSnapshot 객체로 캡처.
+        /// </summary>
+        public static GLStateSnapshot Capture()
+        {
+            GL.GetFloat(GetPName.ColorClearValue, out Vector4 clearColor);
+            bool depthTestEnabled = GL.IsEnabled(EnableCap.DepthTest);
+            bool clipDistance0Enabled = GL.IsEnabled(EnableCap.ClipDistance0);
+            bool depthMaskEnabled = GL.GetBoolean(GetPName.DepthWritemask);
+            bool cullFaceEnabled = GL.IsEnabled(EnableCap.CullFace);
+            GL.GetInteger(GetPName.CullFaceMode, out int cullFaceModeInt);
+            TriangleFace cullFaceMode = (TriangleFace)cullFaceModeInt;
+            GL.GetInteger(GetPName.FrontFace, out int frontFaceInt);
+            FrontFaceDirection frontFaceDirection = (FrontFaceDirection)frontFaceInt;
+            bool blendingEnabled = GL.IsEnabled(EnableCap.Blend);
+            GL.GetInteger(GetPName.BlendSrcRgb, out int srcFactorInt);
+            GL.GetInteger(GetPName.BlendDstRgb, out int dstFactorInt);
+            BlendingFactor blendingSrcFactor = (BlendingFactor)srcFactorInt;
+            BlendingFactor blendingDstFactor = (BlendingFactor)dstFactorInt;
+            GL.GetInteger(GetPName.DrawFramebufferBinding, out int boundFramebuffer);
+            int[] viewport = new int[4];
+
+            GL.GetInteger(GetPName.Viewport, viewport);
+
+            GL.GetInteger(GetPName.DepthFunc, out int depthFuncInt);
+            DepthFunction depthFuncMode = (DepthFunction)depthFuncInt;
+
+            return new GLStateSnapshot(
+                clearColor,
+                depthTestEnabled,
+                clipDistance0Enabled,
+                depthMaskEnabled,
+                depthFuncMode,
+                cullFaceEnabled,
+                cullFaceMode,
+                frontFaceDirection,
+                blendingEnabled,
+                blendingSrcFactor,
+                blendingDstFactor,
+                boundFramebuffer,
+                new Vector4i(viewport[0], viewport[1], viewport[2], viewport[3]));
+        }
+
+        /// <summary>
+        /// 이 스냅샷에 저장된 상태를 OpenGL의 현재 상태로 적용하여 복원.
+        /// 모든 상태 변경은 GLState 헬퍼 클래스를 통해 이루어집니다.
+        /// </summary>
+        public void Apply()
+        {
+            GLState.Apply(this);
+        }
+    }
+}

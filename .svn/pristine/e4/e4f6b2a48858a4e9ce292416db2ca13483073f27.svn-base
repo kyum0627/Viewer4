@@ -1,0 +1,113 @@
+﻿//using IGX.Selection3D.Scene;
+//using OpenTK.GLControl;
+//using OpenTK.Graphics.OpenGL;
+//using OpenTK.Mathematics;
+
+
+//namespace IGX.Selection3D.Core
+//{
+//    public class SelectionControl3D : GLControl
+//    {
+//        private SelectionManager2 _selectionManager;
+//        private bool _rightMouseDown = false;
+//        private Point _lastMouse;
+
+//        public IScene Scene { get; set; }
+//        public SelectionManager2 SelectionManager => _selectionManager;
+
+//        public SelectionControl3D()
+//        {
+//            _selectionManager = new SelectionManager2(this);
+//            MouseUp += OnMouseUp;
+//            MouseDown += OnMouseDown;
+//            MouseMove += OnMouseMove;
+//            MouseWheel += OnMouseWheel;
+//            KeyDown += OnKeyDown;
+//        }
+
+//        protected override void OnResize(EventArgs e)
+//        {
+//            base.OnResize(e);
+
+//            if (this.Context != null && !this.Context.IsCurrent)
+//                this.MakeCurrent();
+
+//            if (this.Context != null)
+//                GL.Viewport(0, 0, Width, Height);
+
+//            Invalidate();
+//        }
+
+//        private void OnMouseUp(object sender, MouseEventArgs e)
+//        {
+//            if (e.Button == MouseButtons.Left)
+//            {
+//                bool ctrl = (ModifierKeys & Keys.Control) == Keys.Control;
+//                bool shift = (ModifierKeys & Keys.Shift) == Keys.Shift;
+//                _selectionManager?.EndDrag(e.Location, e.Button, ctrl, shift);
+//            }
+//            else if (e.Button == MouseButtons.Right)
+//                _rightMouseDown = false;
+//        }
+
+//        private void OnMouseDown(object sender, MouseEventArgs e)
+//        {
+//            if (e.Button == MouseButtons.Right)
+//            {
+//                _rightMouseDown = true;
+//                _lastMouse = e.Location;
+//            }
+//            else if (e.Button == MouseButtons.Left)
+//            {
+//                _selectionManager?.BeginDrag(e.Location);
+//            }
+//        }
+
+//        private void OnMouseMove(object sender, MouseEventArgs e)
+//        {
+//            if (_rightMouseDown)
+//            {
+//                int dx = e.X - _lastMouse.X;
+//                int dy = e.Y - _lastMouse.Y;
+//                _selectionManager?.CameraRotate(dx, dy);
+//                _lastMouse = e.Location;
+//                Invalidate();
+//            }
+//        }
+
+//        private void OnMouseWheel(object sender, MouseEventArgs e)
+//        {
+//            _selectionManager?.CameraZoom(e.Delta);
+//            Invalidate();
+//        }
+
+//        private void OnKeyDown(object sender, KeyEventArgs e)
+//        {
+//            if (e.Control && e.KeyCode == Keys.Z) _selectionManager?.Undo();
+//            if (e.Control && e.KeyCode == Keys.Y) _selectionManager?.Redo();
+//        }
+//        protected override void OnPaint(PaintEventArgs e)
+//        {
+//            base.OnPaint(e);
+//            if (Scene == null || !this.Context.IsCurrent) return;
+
+//            GL.Clear(ClearBufferMask.ColorBufferBit | ClearBufferMask.DepthBufferBit);
+
+//            // Projection
+//            float aspect = Width / (float)Height;
+//            Matrix4 proj = Scene.ActiveCamera.GetProjectionMatrix(aspect);
+//            GL.MatrixMode(MatrixMode.Projection);
+//            GL.LoadMatrix(ref proj);
+
+//            // View
+//            Matrix4 view = Scene.ActiveCamera.GetViewMatrix();
+//            GL.MatrixMode(MatrixMode.Modelview);
+//            GL.LoadMatrix(ref view);
+
+//            // SceneParameter Render
+//            Scene.Render();
+
+//            SwapBuffers();
+//        }
+//    }
+//}

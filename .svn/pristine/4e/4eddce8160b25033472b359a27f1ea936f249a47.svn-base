@@ -1,0 +1,60 @@
+﻿using IGX.ViewControl.Buffer.Common;
+using IGX.ViewControl.Render;
+using OpenTK.GLControl;
+using OpenTK.Graphics.OpenGL4;
+
+namespace IGX.ViewControl
+{
+    public class DeferredPass : IRenderer
+    {
+        private readonly IgxViewAPI _apis;
+        private readonly List<IRenderer> _scenes = [];
+
+        public DeferredPass(IgxViewAPI apis)//, GLControl glControl)
+        {
+            _apis = apis;
+            var gBufferPass = new GBufferPass(apis);
+            var postProcessPass = new PostProcessPass(apis, gBufferPass);
+
+            _scenes.Add(gBufferPass);
+            _scenes.Add(postProcessPass);
+        }
+
+        public void Initialize(int width, int height)
+        {
+            foreach (var scene in _scenes)
+            {
+                scene.Initialize(width, height);
+            }
+        }
+
+        public void Draw(IMyCamera camera, bool draw)
+        {
+            GLState.BindFramebuffer(FramebufferTarget.Framebuffer, 0);
+            GLState.SetClearColor(_apis.BackGroundColor);
+            GLState.ClearDrawingBuffer();
+
+            foreach (var scene in _scenes)
+            {
+                scene.Draw(camera, draw);
+            }
+        }
+
+        public void Resize(int width, int height)
+        { // Frame Buffer를 사용하므로 반드시 수행해야 함
+            GLState.SetViewport(0, 0, width, height);
+            foreach (var scene in _scenes)
+            {
+                scene.Resize(width, height);
+            }
+        }
+
+        public void Dispose()
+        {
+            foreach (var scene in _scenes)
+            {
+                scene.Dispose();
+            }
+        }
+    }
+}

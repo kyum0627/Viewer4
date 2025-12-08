@@ -1,0 +1,265 @@
+﻿using OpenTK.Graphics.OpenGL4;
+using OpenTK.Mathematics;
+using System.Diagnostics;
+using System.Runtime.CompilerServices;
+
+namespace IGX.ViewControl.Buffer.Common
+{
+    public static class GLState
+    {
+        private static readonly object _lock = new object();
+        private static GLStateSnapshot? _cachedState = null;
+
+        /// <summary>
+        /// 캐시된 OpenGL 상태 스냅샷을 가져오거나, 캐시가 없는 경우 현재 상태를 캡처하여 초기화.
+        /// 이 메서드는 스레드로부터 안전.
+        /// </summary>
+        private static GLStateSnapshot GetOrCreateCachedState()
+        {
+            lock (_lock)
+            {
+                return _cachedState ??= GLStateSnapshot.Capture();
+            }
+        }
+
+        public static void InvalidateCache()
+        {
+            lock (_lock)
+            {
+                _cachedState = null;
+            }
+        }
+
+        public static void UpdateCachedState(GLStateSnapshot newSnapshot)
+        {
+            lock (_lock)
+            {
+                _cachedState = newSnapshot;
+            }
+        }
+
+        public static void SetClearColor(Vector4 color)
+        {
+            lock (_lock)
+            {
+                var currentState = GetOrCreateCachedState();
+                if (currentState.ClearColor != color)
+                {
+                    GL.ClearColor(color.X, color.Y, color.Z, color.W);
+                    _cachedState = currentState with { ClearColor = color };
+                }
+                ErrorCheck(nameof(SetClearColor));
+            }
+        }
+
+        public static void ClearDrawingBuffer()
+        {
+            lock (_lock)
+            {
+                GL.Clear(ClearBufferMask.ColorBufferBit | ClearBufferMask.DepthBufferBit | ClearBufferMask.StencilBufferBit);
+                ErrorCheck(nameof(ClearDrawingBuffer));
+            }
+        }
+
+        public static void GLStencilAndDepthBuffersInitialize(int stencilClearValue, float depthClearValue)
+        {
+            lock (_lock)
+            {
+                GL.ClearStencil(stencilClearValue);
+                GL.ClearDepth(depthClearValue);
+                ErrorCheck(nameof(GLStencilAndDepthBuffersInitialize));
+            }
+        }
+
+        public static void SetDepthTest(bool enable)
+        {
+            lock (_lock)
+            {
+                var currentState = GetOrCreateCachedState();
+                if (currentState.DepthTestEnabled != enable)
+                {
+                    SetEnableState(EnableCap.DepthTest, enable);
+                    _cachedState = currentState with { DepthTestEnabled = enable };
+                }
+                ErrorCheck(nameof(SetDepthTest));
+            }
+        }
+
+        public static void SetDepthMask(bool enable)
+        {
+            lock (_lock)
+            {
+                var currentState = GetOrCreateCachedState();
+                if (currentState.DepthMaskEnabled != enable)
+                {
+                    GL.DepthMask(enable);
+                    _cachedState = currentState with { DepthMaskEnabled = enable };
+                }
+                ErrorCheck(nameof(SetDepthMask));
+            }
+        }
+
+        public static void DepthFunc(DepthFunction func)
+        {
+            lock (_lock)
+            {
+                var currentState = GetOrCreateCachedState();
+                if (currentState.DepthFuncMode != func)
+                {
+                    GL.DepthFunc(func);
+                    _cachedState = currentState with { DepthFuncMode = func };
+                }
+                ErrorCheck(nameof(DepthFunc));
+            }
+        }
+        public static void SetCullFace(bool enable, TriangleFace mode = TriangleFace.Back)
+        {
+            lock (_lock)
+            {
+                var currentState = GetOrCreateCachedState();
+                if (currentState.CullFaceEnabled != enable)
+                {
+                    SetEnableState(EnableCap.CullFace, enable);
+                    _cachedState = currentState with { CullFaceEnabled = enable };
+                }
+
+                if (enable && currentState.CullFaceMode != mode)
+                {
+                    GL.CullFace(mode);
+                    _cachedState = _cachedState! with { CullFaceMode = mode };
+                }
+                ErrorCheck(nameof(SetCullFace));
+            }
+        }
+
+        public static void SetFrontFaceDirection(FrontFaceDirection direction = FrontFaceDirection.Ccw)
+        {
+            lock (_lock)
+            {
+                var currentState = GetOrCreateCachedState();
+                if (currentState.FrontFaceDirection != direction)
+                {
+                    GL.FrontFace(direction);
+                    _cachedState = currentState with { FrontFaceDirection = direction };
+                }
+                ErrorCheck(nameof(SetFrontFaceDirection));
+            }
+        }
+
+        public static void SetBlending(bool enable, BlendingFactor src = BlendingFactor.SrcAlpha, BlendingFactor dst = BlendingFactor.OneMinusSrcAlpha)
+        {
+            lock (_lock)
+            {
+                var currentState = GetOrCreateCachedState();
+                if (currentState.BlendingEnabled != enable)
+                {
+                    SetEnableState(EnableCap.Blend, enable);
+                    _cachedState = currentState with { BlendingEnabled = enable };
+                }
+
+                if (enable && (currentState.BlendingSrcFactor != src || currentState.BlendingDstFactor != dst))
+                {
+                    GL.BlendFunc(src, dst);
+                    _cachedState = currentState with { BlendingSrcFactor = src, BlendingDstFactor = dst };
+                }
+                ErrorCheck(nameof(SetBlending));
+            }
+        }
+
+        public static void SetViewport(int x, int y, int width, int height)
+        {
+            lock (_lock)
+            {
+                var currentState = GetOrCreateCachedState();
+                if (currentState.Viewport.X != x || currentState.Viewport.Y != y || currentState.Viewport.Z != width || currentState.Viewport.W != height)
+                {
+                    GL.Viewport(x, y, width, height);
+                    _cachedState = currentState with { Viewport = new Vector4i(x, y, width, height) };
+                }
+                ErrorCheck(nameof(SetViewport));
+            }
+        }
+
+        public static void BindFramebuffer(FramebufferTarget target, int handle)
+        {
+            lock (_lock)
+            {
+                var currentState = GetOrCreateCachedState();
+                if (currentState.BoundFramebuffer != handle)
+                {
+                    GL.BindFramebuffer(target, handle);
+                    _cachedState = currentState with { BoundFramebuffer = handle };
+                }
+                ErrorCheck(nameof(BindFramebuffer));
+            }
+        }
+
+        public static void SetClipDistance0(bool enable)
+        {
+            lock (_lock)
+            {
+                var currentState = GetOrCreateCachedState();
+                if (currentState.ClipDistance0Enabled != enable)
+                {
+                    SetEnableState(EnableCap.ClipDistance0, enable);
+                    _cachedState = currentState with { ClipDistance0Enabled = enable };
+                }
+                ErrorCheck(nameof(SetClipDistance0));
+            }
+        }
+
+        public static Vector4i GetViewport()
+        {
+            lock (_lock)
+            {
+                return GetOrCreateCachedState().Viewport;
+            }
+        }
+
+        public static void Apply(GLStateSnapshot state)
+        {
+            lock (_lock)
+            {
+                SetClearColor(state.ClearColor);
+                SetDepthTest(state.DepthTestEnabled);
+                SetClipDistance0(state.ClipDistance0Enabled);
+                SetDepthMask(state.DepthMaskEnabled);
+                DepthFunc(state.DepthFuncMode); // 새로 추가
+                SetCullFace(state.CullFaceEnabled, state.CullFaceMode);
+                SetFrontFaceDirection(state.FrontFaceDirection);
+                SetBlending(state.BlendingEnabled, state.BlendingSrcFactor, state.BlendingDstFactor);
+                BindFramebuffer(FramebufferTarget.Framebuffer, state.BoundFramebuffer);
+                SetViewport(state.Viewport.X, state.Viewport.Y, state.Viewport.Z, state.Viewport.W);
+                _cachedState = state;
+            }
+        }
+
+        private static void SetEnableState(EnableCap cap, bool enable)
+        {
+            if (enable)
+            {
+                GL.Enable(cap);
+            }
+            else
+            {
+                GL.Disable(cap);
+            }
+        }
+
+        [Conditional("DEBUG")]
+        public static void ErrorCheck(
+            string message = "",
+            [CallerMemberName] string memberName = "",
+            [CallerFilePath] string sourceFilePath = "",
+            [CallerLineNumber] int sourceLineNumber = 0)
+        {
+            ErrorCode error = GL.GetError();
+            if (error != ErrorCode.NoError)
+            {
+                string errorMessage = $"OpenGL 오류 ({error}) 발생 위치: {sourceFilePath}:{sourceLineNumber} ({memberName} 메서드). {message}";
+                //throw new GLStateException(error, errorMessage);
+                Debug.WriteLine(errorMessage);
+            }
+        }
+    }
+}

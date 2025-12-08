@@ -1,0 +1,266 @@
+﻿using IGX.ViewControl.Buffer.Common;
+using OpenTK.Graphics.OpenGL4;
+using System;
+using System.Collections.Concurrent;
+using System.Collections.Generic;
+
+namespace IGX.ViewControl.Buffer
+{
+    public sealed class FrameBuffer : IDisposable
+    {
+        private static readonly ConcurrentQueue<int> _pendingDeletionFBOs = new();
+        private readonly object _lockObject = new();
+        private readonly object _bindLock = new();
+
+        public int FboHandle { get; private set; }
+        public TextureBuffer? Position { get; private set; }
+        public TextureBuffer? Normal { get; private set; }
+        public TextureBuffer? Color { get; private set; }
+        public TextureBuffer? DepthStencil { get; private set; }
+        public TextureBuffer? ObjectID { get; private set; }
+        public TextureBuffer? OverlapAccumXray { get; private set; }
+
+        private bool _isDisposed;
+        private bool _currentIncludeXrayState;
+
+        public FrameBuffer()
+        {
+        }
+
+        public void UpdateGbuffer(int width, int height, bool includeXray = false)
+        {
+            if (_isDisposed)
+            {
+                throw new ObjectDisposedException(nameof(FrameBuffer));
+            }
+            if (!IsContextLikelyActive())
+            {
+                throw new InvalidOperationException("Cannot update G-Buffer without an active OpenGL context.");
+            }
+            if (width <= 0 || height <= 0)
+            {
+                throw new ArgumentOutOfRangeException($"{nameof(width)} or {nameof(height)} must be positive.");
+            }
+
+            lock (_lockObject)
+            {
+                if (FboHandle != 0 && Position?.Width == width && Position?.Height == height && _currentIncludeXrayState == includeXray)
+                {
+                    return;
+                }
+
+                int newFboHandle = 0;
+                TextureBuffer? newPosition = null, newNormal = null, newColor = null, newObjectID = null, newDepthStencil = null, newOverlapAccumXray = null;
+
+                try
+                {
+                    lock (_bindLock)
+                    {
+                        newFboHandle = GL.GenFramebuffer();
+                        CheckGLError();
+
+                        GL.BindFramebuffer(FramebufferTarget.Framebuffer, newFboHandle);
+                        CheckGLError();
+
+                        newPosition = CreateAndAttachTexture(width, height, FramebufferAttachment.ColorAttachment0, PixelInternalFormat.Rgb16f, PixelFormat.Rgb, PixelType.Float);
+                        newNormal = CreateAndAttachTexture(width, height, FramebufferAttachment.ColorAttachment1, PixelInternalFormat.Rgb16f, PixelFormat.Rgb, PixelType.Float);
+                        newColor = CreateAndAttachTexture(width, height, FramebufferAttachment.ColorAttachment2, PixelInternalFormat.Rgba16f, PixelFormat.Rgba, PixelType.Float);
+                        newObjectID = CreateAndAttachTexture(width, height, FramebufferAttachment.ColorAttachment3, PixelInternalFormat.R32i, PixelFormat.RedInteger, PixelType.Int);
+                        newDepthStencil = CreateAndAttachTexture(width, height,
+                            FramebufferAttachment.DepthStencilAttachment,
+                            PixelInternalFormat.Depth24Stencil8,
+                            PixelFormat.DepthStencil,
+                            PixelType.UnsignedInt248,
+                            TextureMinFilter.Nearest,
+                            TextureMagFilter.Nearest);
+
+                        var drawBuffers = new List<DrawBuffersEnum>
+                        {
+                            DrawBuffersEnum.ColorAttachment0,
+                            DrawBuffersEnum.ColorAttachment1,
+                            DrawBuffersEnum.ColorAttachment2,
+                            DrawBuffersEnum.ColorAttachment3
+                        };
+
+                        if (includeXray)
+                        {
+                            newOverlapAccumXray = CreateAndAttachTexture(width, height, FramebufferAttachment.ColorAttachment4, PixelInternalFormat.R32f, PixelFormat.Red, PixelType.Float);
+                            drawBuffers.Add(DrawBuffersEnum.ColorAttachment4);
+                        }
+
+                        GL.DrawBuffers(drawBuffers.Count, drawBuffers.ToArray());
+                        CheckGLError();
+
+                        var fboStatus = GL.CheckFramebufferStatus(FramebufferTarget.Framebuffer);
+                        if (fboStatus != FramebufferErrorCode.FramebufferComplete)
+                        {
+                            throw new InvalidOperationException($"Framebuffer creation failed with status: {fboStatus}.");
+                        }
+
+                        ClearAndEnqueueOldFBO();
+                        FboHandle = newFboHandle;
+                        Position = newPosition;
+                        Normal = newNormal;
+                        Color = newColor;
+                        ObjectID = newObjectID;
+                        DepthStencil = newDepthStencil;
+                        OverlapAccumXray = newOverlapAccumXray;
+                        _currentIncludeXrayState = includeXray;
+                    }
+                }
+                catch
+                {
+                    if (newFboHandle != 0)
+                    {
+                        GL.DeleteFramebuffer(newFboHandle);
+                    }
+                    newPosition?.Dispose();
+                    newNormal?.Dispose();
+                    newColor?.Dispose();
+                    newObjectID?.Dispose();
+                    newDepthStencil?.Dispose();
+                    newOverlapAccumXray?.Dispose();
+                    throw;
+                }
+                finally
+                {
+                    GL.BindFramebuffer(FramebufferTarget.Framebuffer, 0);
+                    CheckGLError();
+                }
+            }
+        }
+
+        private TextureBuffer CreateAndAttachTexture(int width, int height, FramebufferAttachment attachment, PixelInternalFormat internalFormat, PixelFormat format, PixelType type, TextureMinFilter minFilter = TextureMinFilter.Linear, TextureMagFilter magFilter = TextureMagFilter.Linear)
+        {
+            var texture = new TextureBuffer(width, height, internalFormat, format, type, 0, minFilter, magFilter);
+            texture.AttachToFramebuffer(attachment);
+            return texture;
+        }
+
+        public void Use()
+        {
+            if (_isDisposed)
+            {
+                throw new ObjectDisposedException(nameof(FrameBuffer));
+            }
+            if (!IsContextLikelyActive())
+            {
+                throw new InvalidOperationException("Cannot bind framebuffer without an active OpenGL context.");
+            }
+
+            lock (_bindLock)
+            {
+                GL.BindFramebuffer(FramebufferTarget.Framebuffer, FboHandle);
+                CheckGLError();
+            }
+        }
+
+        public bool IsValid()
+        {
+            lock (_lockObject)
+            {
+                if (_isDisposed || FboHandle == 0)
+                {
+                    return false;
+                }
+
+                if (!IsContextLikelyActive())
+                {
+                    Console.WriteLine("Warning: Cannot check framebuffer status without an active OpenGL context.");
+                    return false;
+                }
+
+                lock (_bindLock)
+                {
+                    GL.BindFramebuffer(FramebufferTarget.Framebuffer, FboHandle);
+                    bool isComplete = GL.CheckFramebufferStatus(FramebufferTarget.Framebuffer) == FramebufferErrorCode.FramebufferComplete;
+                    GL.BindFramebuffer(FramebufferTarget.Framebuffer, 0);
+                    CheckGLError();
+                    return isComplete;
+                }
+            }
+        }
+
+        public static void ProcessPendingDeletions()
+        {
+            if (!IsContextLikelyActive())
+            {
+                throw new InvalidOperationException("Cannot process pending deletions without an active OpenGL context.");
+            }
+
+            while (_pendingDeletionFBOs.TryDequeue(out int fboHandle))
+            {
+                try
+                {
+                    GL.DeleteFramebuffer(fboHandle);
+                    CheckGLError();
+                    Console.WriteLine($"FBO {fboHandle} deleted.");
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"Warning: Failed to delete FBO {fboHandle}: {ex.Message}");
+                }
+            }
+        }
+
+        private void ClearAndEnqueueOldFBO()
+        {
+            if (FboHandle != 0)
+            {
+                _pendingDeletionFBOs.Enqueue(FboHandle);
+                FboHandle = 0;
+            }
+
+            Position?.Dispose();
+            Normal?.Dispose();
+            Color?.Dispose();
+            ObjectID?.Dispose();
+            DepthStencil?.Dispose();
+            OverlapAccumXray?.Dispose();
+
+            Position = null;
+            Normal = null;
+            Color = null;
+            ObjectID = null;
+            DepthStencil = null;
+            OverlapAccumXray = null;
+        }
+
+        public void Dispose()
+        {
+            lock (_lockObject)
+            {
+                if (_isDisposed)
+                {
+                    return;
+                }
+
+                ClearAndEnqueueOldFBO();
+                _isDisposed = true;
+            }
+            GC.SuppressFinalize(this);
+        }
+
+        private static bool IsContextLikelyActive()
+        {
+            try
+            {
+                GL.GetError();
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static void CheckGLError()
+        {
+            var error = GL.GetError();
+            if (error != ErrorCode.NoError)
+            {
+                throw new InvalidOperationException($"OpenGL error: {error}");
+            }
+        }
+    }
+}

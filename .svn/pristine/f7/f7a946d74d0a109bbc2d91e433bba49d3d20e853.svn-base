@@ -1,0 +1,716 @@
+﻿using System;
+using System.Collections;
+using System.Collections.Generic;
+using OpenTK.Mathematics;
+
+namespace IGX.Geometry.Common
+{
+    public class Polygon2 : IEnumerable<Vector2>
+    {
+        public List<Vector2> points;
+        public List<int> index;// contour_vertex_indices of ControlPoints
+
+        private AABB2 bound; // Contour를 둘러싼 박스
+        public Vector2 COG;
+        public float ArcLength { get { return Perimeter; } }
+        public float Area { get { return Math.Abs(SignedArea()); } }
+
+        public float AverageEdgeLength
+        {
+            get
+            {
+                float avg = 0;
+                int N = points.Count;
+                for (int i = 1; i < N; ++i)
+                {
+                    avg += points[i].DistanceTo(points[i - 1]);
+                }
+
+                avg += points[N - 1].DistanceTo(points[0]);
+                return avg / N;
+            }
+        }
+
+        public AABB2 Bound { get { return bound = GetBound(); } }
+
+        public bool IsCW { get { return GetOrientation() == -1; } }
+
+        /// <summary>
+        /// 둘레 길이 Sum
+        /// </summary>
+        public float Perimeter // Boundary, 경계
+        {
+            get
+            {
+                float Lengthsum = 0;
+                int n = points.Count;
+
+                for (int i = 0; i < n; ++i)
+                {
+                    Lengthsum += points[i].DistanceTo(points[(i + 1) % n]);
+                }
+
+                return Lengthsum;
+            }
+        }
+        public Vector2 StartPoint { get { return points[0]; } }
+
+        /// <summary>
+        /// Polygon의 key번쨰 point
+        /// </summary>
+        /// <param name="key"></param>
+        /// <returns>key번쨰 point</returns>
+        public Vector2 this[int key]
+        {
+            get { return points[key]; }
+            set { points[key] = value; }
+        }
+
+        public Polygon2()
+        {
+            index = new List<int>();// contour_vertex_indices of ControlPoints
+            bound = new AABB2(); // Contour를 둘러싼 박스
+            COG = new Vector2();
+            points = new List<Vector2>();
+        }
+
+        public void Add(Vector2 v)
+        {
+            points.Add(v);
+        }
+
+        public Polygon2(Vector2[] v) : this(new List<Vector2>(v))
+        {
+            points = new List<Vector2>(v);
+            COG = new Vector2();
+            for (int i = 0; i < points.Count; i++)
+            {
+                index[i] = i;
+            }
+
+            bound = GetBound();
+        }
+
+        public Polygon2(List<Vector2> copy) : this()
+        {
+            points = new List<Vector2>(copy);
+            for (int i = 0; i < points.Count; i++)
+            {
+                index.Add(i); // Initialize index based on ControlPoints Continuity
+            }
+
+            bound = GetBound(); // Calculate bound
+        }
+        public Polygon2(Polygon2 copy) : this(copy.points)
+        {
+            COG = copy.COG; // Copy TotalCentroid
+            index = new List<int>(copy.index); // Copy index list
+            bound = GetBound(); // Calculate bound
+        }
+
+        /// <summary>
+        /// 주어진 점 p와 가장 가까운 segment를 찾고 그 세그먼트상의 점의 parameter 계산
+        /// </summary>
+        /// <param name="p"></param>
+        /// <param name="nearSegID">가장 가까운 세그먼트의 NextID</param>
+        /// <param name="nearSegP">가장 가까운 세그먼트상의 parameter(부호 있음)</param>
+        /// <returns>거리</returns>
+        public float DistanceSquared(Vector2 p, out int nearSegID, out float nearSegP)
+        {
+            nearSegID = -1;
+            nearSegP = float.MaxValue;
+            float dist = float.MaxValue;
+            int N = points.Count;
+            for (int vi = 0; vi < N; ++vi)
+            {
+                Segment2f seg = new(points[vi], points[(vi + 1) % N]);
+                float t = Vector2.Dot(p - seg.center, seg.direction);
+                float d;// = float.MaxValue;
+
+                if (t >= seg.extent)
+                {
+                    d = Vector2.DistanceSquared(seg.P1, p);
+                }
+                else if (t <= -seg.extent)
+                {
+                    d = Vector2.DistanceSquared(seg.P0, p);
+                }
+                else
+                {
+                    d = (seg.GetPointAt(t) - p).LengthSquared;
+                }
+
+                if (d < dist)
+                {
+                    dist = d;
+                    nearSegID = vi;
+                    nearSegP = t;
+                }
+            }
+            return dist;
+        }
+
+        /// <summary>
+        /// 폴리곤을 포함하는 Axis Aligned Bounding Box
+        /// </summary>
+        /// <returns></returns>
+        public AABB2 GetBound()
+        {
+            bound = AABB2.Empty;
+
+            for (int I = 0; I < points.Count; I++)
+            {
+                bound.Contain(points[I]);
+            }
+
+            return bound;
+        }
+
+        /// <summary>
+        /// 선분과 가장 가까운 점의 index 찾기
+        /// </summary>
+        /// <param name="points"></param>
+        /// <param name="segment"></param>
+        /// <returns>가까운 점의 index</returns>
+        public int GetClosestPointID(Segment2f segment)
+        {
+            Vector2 P0 = segment.P0;
+            Vector2 P1 = segment.P1;
+
+            float a = P0.Y - P1.Y;
+            float b = P1.X - P0.X;
+            float c = (P0.X * P1.Y) - (P1.X * P0.Y);
+
+            int mi = 0;
+            float min = (a * points[0].X) + (b * points[0].Y) + c;
+
+            if (min < 0)
+            {
+                min = -min;
+            }
+
+            for (int i = 1; i < points.Count; i++)
+            {
+                float dist = (a * points[i].X) + (b * points[i].Y) + c;
+
+                if (dist < 0)
+                {
+                    dist = -dist;
+                }
+
+                if (dist < min)
+                {
+                    mi = i;
+                    min = dist;
+                }
+            }
+            return mi; // 가까운 점의 index
+        }
+
+        /// <summary>
+        /// other 폴리곤의 어느 점이 this 폴리곤 내부에 있는지 검사
+        /// </summary>
+        /// <param name="other"></param>
+        /// <returns>bool list, 내부에 있는점은 true, 아닌 점은 false</returns>
+        public List<bool> GetContainedPoints(Polygon2 other)
+        {
+            List<bool> wind = new();
+
+            for (int i = 0; i < other.points.Count; i++)
+            {
+                if (GeometricTools.WindingNumber(points, other.points[i]))
+                {
+                    wind.Add(true);
+                }
+                else
+                {
+                    wind.Add(false);
+                }
+            }
+
+            return wind;
+        }
+
+        //public Vector2[] GetConvexHull()
+        //{
+        //    return ConvexHull2.Compute(ControlPoints.ToList());//, out index, true);
+        //}
+
+        /// <summary>
+        /// mVertexPool enumerator
+        /// </summary>
+        /// <returns></returns>
+        public IEnumerator<Vector2> GetEnumerator()
+        {
+            return points.GetEnumerator();
+        }
+
+        /// <summary>
+        /// id번째 point의 인접 mVertexPool 가져오기
+        /// </summary>
+        /// <param name="id"></param>
+        /// <param name="p0">previous point</param>
+        /// <param name="p1">p1ID point</param>
+        public void GetNeighbourPoints(int id, ref Vector2 p0, ref Vector2 p1)
+        {
+            int N = points.Count;
+            p0 = points[id == 0 ? N - 1 : id - 1];
+            p1 = points[(id + 1) % N];
+        }
+
+        /// <summary>
+        /// id번째 point의 인접 vector 가져오기
+        /// </summary>
+        /// <param name="id"></param>
+        /// <param name="v0">previous vector</param>
+        /// <param name="v1">p1ID vector</param>
+        /// <param name="bNormalize">v0, v1 단위 벡터화 여부, default = 단위벡터화 하지 않음</param>
+        public void GetNeighbourVectors(int id, ref Vector2 v0, ref Vector2 v1, bool bNormalize = false)
+        {
+            int N = points.Count;
+            v0 = points[id == 0 ? N - 1 : id - 1] - points[id];
+            v1 = points[(id + 1) % N] - points[id];
+            if (bNormalize)
+            {
+                v0 = Vector2.Normalize(v0);
+                v1 = Vector2.Normalize(v1);
+            }
+        }
+
+        /// <summary>
+        /// 점 i 의 단위 norID vector 계산
+        ///
+        ///      ^ norID
+        ///      |
+        ///      |
+        ///   Pi o----> tangent
+        ///     / \
+        ///    /   \
+        ///   /     \
+        /// </summary>
+        /// <param name="i"></param>
+        /// <returns>unit norID vector</returns>
+        public Vector2 GetNormal(int i)
+        {
+            return GetTangent(i).Perp();
+        }
+
+        /// <summary>
+        /// 점 i 의 단위 법선 vector 계산
+        ///
+        ///      ^ norID
+        ///      |
+        ///      |
+        ///   Pi o----> tangeht
+        ///     / \
+        ///    /   \
+        ///   /     \
+        /// </summary>
+        /// <param name="i"></param>
+        /// <returns>unit tengent vector</returns>
+        public Vector2 GetTangent(int i)
+        {
+            Vector2 next = points[(i + 1) % points.Count];
+            Vector2 prev = points[i == 0 ? points.Count - 1 : i - 1];
+            return Vector2.Normalize(next - prev);
+        }
+
+        /// <summary>
+        /// NextID point를 끼고 있는 두 벡터의 사잇각
+        ///
+        ///   Pi o
+        ///     / \
+        ///    / a \
+        ///   /     \
+        ///
+        /// </summary>
+        /// <param name="id"></param>
+        /// <returns></returns>
+        public float GetOpeningAngleDegAt(int id)
+        {
+            Vector2 e0 = Vector2.Zero, e1 = Vector2.Zero;
+            GetNeighbourVectors(id, ref e0, ref e1, true);
+            return e0.AngleDeg(e1);
+        }
+
+        /// <summary>
+        /// segmentID의 parametric point
+        ///
+        /// P0                     P1
+        ///  o-----------*---------o
+        ///  0           t         1
+        ///
+        /// </summary>
+        /// <param name="segmentID"></param>
+        /// <param name="paramater"></param>
+        /// <returns></returns>
+        public Vector2 GetPointAtParameter(int segmentID, float paramater)
+        {
+            Segment2f seg = new(points[segmentID], points[(segmentID + 1) % points.Count]);
+            return seg.GetPointAt(paramater);
+        }
+
+        /// <summary>
+        /// polygon의회전 방향 판단
+        /// </summary>
+        /// <returns>1 : CCW, -1 : CW, 0 : none</returns>
+        public int GetOrientation()
+        {
+            if (points.Count < 1)
+            {
+                return 0;
+            }
+
+            int k = 0;
+            float xmin = points[0].X;
+            float ymin = points[0].Y;
+
+            int n = points.Count;
+
+            for (int i = 1; i < n; i++)
+            {
+                if (points[i].Y > ymin)
+                {
+                    continue;
+                }
+
+                if (points[i].Y == ymin)
+                {
+                    if (points[i].X < xmin)
+                    {
+                        continue;
+                    }
+                }
+                k = i;
+                xmin = points[i].X;
+                ymin = points[i].Y;
+            }
+
+            return k == 0
+                ? IsPointLeftOfLineDirection(points[1], points[n - 1], points[0])
+                : IsPointLeftOfLineDirection(points[(k + 1) % n], points[k - 1], points[k]);
+        }
+
+        public enum PolyGonType
+        {
+            Convex,
+            Concave,
+            None
+        }
+
+        public PolyGonType IsConvex(List<Vector2> p)
+        {
+            int i, j, k;
+            int flag = 0;
+            double z;
+            int n = p.Count;
+
+            if (n < 3)
+            {
+                return 0;
+            }
+
+            for (i = 0; i < n; i++)
+            {
+                j = (i + 1) % n;
+                k = (i + 2) % n;
+                z = (p[j].X - p[i].X) * (p[k].Y - p[j].Y);
+                z -= (p[j].Y - p[i].Y) * (p[k].X - p[j].X);
+                if (z < 0)
+                {
+                    flag |= 1;
+                }
+                else if (z > 0)
+                {
+                    flag |= 2;
+                }
+
+                if (flag == 3)
+                {
+                    return PolyGonType.Concave;
+                }
+            }
+            return flag != 0 ? PolyGonType.Convex : PolyGonType.None;
+        }
+
+        /// <summary>
+        /// polygon 의 k 번째 선분 가져오기
+        /// </summary>
+        /// <param name="k"></param>
+        /// <returns></returns>
+        public Segment2f GetSegment(int k)
+        {
+            return new Segment2f(points[k], points[(k + 1) % points.Count]);
+        }
+
+        /// <summary>
+        /// polygon을 선분 list로 쪼개서 가져오기
+        /// </summary>
+        /// <returns></returns>
+        public IEnumerable<Segment2f> GetSegments()
+        {
+            for (int i = 0; i < points.Count; ++i)
+            {
+                yield return new Segment2f(points[i], points[(i + 1) % points.Count]);
+            }
+        }
+
+        IEnumerator IEnumerable.GetEnumerator()
+        {
+            return points.GetEnumerator();
+        }
+
+        public bool Intersects(Segment2f other)
+        {
+            // [TODO] Add bbox check
+            if (Contains(other.P0) == true || Contains(other.P1) == true)
+            {
+                return true;
+            }
+
+            // [TODO] Add bbox check
+            foreach (Segment2f seg in SegmentItr())
+            {
+                if (seg.Intersects(other))
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        /// <summary>
+        /// this polygon이 other polygon과 교차하는지 검사
+        /// </summary>
+        /// <param name="other"></param>
+        /// <returns>교차하면 true</returns>
+        public bool Intersects(Polygon2 other)
+        {
+            if (!GetBound().Collide(other.GetBound()))
+            {
+                return false;
+            }
+
+            foreach (Segment2f seg in SegmentItr())
+            {
+                foreach (Segment2f oseg in other.SegmentItr())
+                {
+                    if (seg.Intersects(oseg))
+                    {
+                        return true;
+                    }
+                }
+            }
+            return false;
+        }
+
+        /// <summary>
+        /// 점 P가 선의 어느쪽에 있는지 검사
+        /// </summary>
+        /// <param name="p">test 대상 점</param>
+        /// <param name="A">선의 시작점</param>
+        /// <param name="B">선의 끝점</param>
+        /// <returns> 점 P가 선의 진행방향 왼쪽에 있으면 1, 선상에 있으면 0, 오는쪽에 있으면 -1</returns>
+        private int IsPointLeftOfLineDirection(Vector2 p, Vector2 A, Vector2 B)
+        {
+            //float test = ((B.X - A.X) * (pID.Y - A.Y) - (pID.X - A.X) * (B.Y - A.Y));
+            float test = GeometricTools.GetPointRelationToVectorAB(p, A, B);
+            return test == 0 ? 0 : test < 0 ? -1 : 1;
+        }
+
+        /// <summary>
+        /// polygon 방향 바꾸기
+        /// </summary>
+        public void Reverse()
+        {
+            points.Reverse();
+        }
+
+        /// <summary>
+        /// polygon을 구성하는 default_nsegs itterator
+        /// </summary>
+        /// <returns></returns>
+        public IEnumerable<Segment2f> SegmentItr()
+        {
+            for (int i = 0; i < points.Count; ++i)
+            {
+                yield return new Segment2f(points[i], points[(i + 1) % points.Count]);
+            }
+        }
+
+        public float SignedArea()
+        {
+            Vector2 cog = new(0, 0);
+            float dArea = 0;
+            int N = points.Count;
+
+            for (int i = 0; i < N; i++)
+            {
+                Vector2 pti = points[i];
+                Vector2 ptii = points[(i + 1) % N];
+
+                cog.X += (pti.X + ptii.X) * ((pti.X * ptii.Y) - (ptii.X * pti.Y));
+                cog.Y += (pti.Y + ptii.Y) * ((pti.X * ptii.Y) - (ptii.X * pti.Y));
+
+                dArea += (pti.X * ptii.Y) - (ptii.X * pti.Y);
+            }
+            dArea /= 2.0f;
+
+            cog.X /= 6.0f * dArea;
+            cog.Y /= 6.0f * dArea;
+
+            COG = cog;
+            return dArea;
+        }
+
+        /// <summary>
+        /// polygon을 vector translate만큼 이동
+        /// </summary>
+        /// <param name="translate">이동량</param>
+        /// <returns></returns>
+        public Polygon2 Translate(Vector2 translate)
+        {
+            for (int i = 0; i < points.Count; ++i)
+            {
+                points[i] += translate;
+            }
+
+            return this;
+        }
+
+        /// <summary>
+        /// 점의 List 반환, bRepeatFirstAtEnd = true이면 맨 끝에 첫점을 중복 반환
+        /// </summary>
+        /// <param name="bRepeatFirstAtEnd"></param>
+        /// <returns></returns>
+        public IEnumerable<Vector2> VerticesItr(bool bRepeatFirstAtEnd)
+        {
+            int N = points.Count;
+            for (int i = 0; i < N; ++i)
+            {
+                yield return points[i]; // yield return은 컬렉션 데이타를 하나씩 리턴, 0 ~ nID-1까지는 uniqpos[i]를
+            }
+
+            if (bRepeatFirstAtEnd)
+            {
+                yield return points[0]; // yield return은 컬렉션 데이타를 하나씩 리턴, bRepeatFirstAtEnd = true이면 0번 vertex
+            }
+        }
+
+        // -------------------------------------------------------------------------------------------------
+        // polygon 내외 부 판단을 위한 함수들
+        // -------------------------------------------------------------------------------------------------
+
+        /// <summary>
+        /// 점 pID 가 포함되어 있는지 검사
+        /// </summary>
+        /// <param name="p"></param>
+        /// <returns>참이면 true</returns>
+        public bool Contains(Vector2 p)//, float eps = MathUtil.Epsilon)
+        {
+            if (Bound.Collide(p))
+            {
+                return GeometricTools.WindingNumber(points, p);//, eps);
+            }
+            else
+            {
+                return false;
+            }
+            //bool result = false;
+
+            //for (int i = 0; i < ControlPoints.Continuity - 1; i++)
+            //{
+            //    if ((((ControlPoints[i + 1].Y <= pID.Y) && (pID.Y < ControlPoints[i].Y)) || ((ControlPoints[i].Y <= pID.Y) && (pID.Y < ControlPoints[i + 1].Y))) &&
+            //        (pID.X < (ControlPoints[i].X - ControlPoints[i + 1].X) * (pID.Y - ControlPoints[i + 1].Y) / (ControlPoints[i].Y - ControlPoints[i + 1].Y) + ControlPoints[i + 1].X))
+            //    {
+            //        result = !result;
+            //    }
+            //}
+            //return result;
+        }
+
+        /// <summary>
+        /// 선분이 포함되어 있는지 검사
+        /// </summary>
+        /// <param name="seg"></param>
+        /// <returns>참이면 true</returns>
+        public bool Contains(Segment2f seg)//, float eps = MathUtil.Epsilon)
+        {
+            return Bound.Collide(seg.P0) && Bound.Collide(seg.P1)
+                && GeometricTools.WindingNumber(points, seg.P0) && GeometricTools.WindingNumber(points, seg.P1);
+        }
+
+        /// <summary>
+        /// 점 p들이 폴리곤 내부에 있는지 검사
+        /// </summary>
+        /// <param name="p"></param>
+        /// <returns>모두 내부에 있으면 true </returns>
+        public bool Contains(List<Vector2> p)//, float eps = MathUtil.Epsilon)
+        {
+            int i, j = points.Count - 1;
+            bool oddNodes = false;
+
+            PrecalcValues(out float[] constant, out float[] multiple);
+            for (int k = 0; k < p.Count; k++)
+            {
+                for (i = 0; i < j; i++)
+                {
+                    if ((points[i].Y < p[k].Y && points[j].Y >= p[k].Y)
+                      || (points[j].Y < p[k].Y && points[i].Y >= p[k].Y))
+                    {
+                        oddNodes ^= (p[k].Y * multiple[i]) + constant[i] < p[k].X;
+                    }
+                    j = i;
+                }
+            }
+
+            return oddNodes;
+        }
+
+        /// <summary>
+        /// Crossing Number 계산을 빨리하기 위한 선행 연산자
+        /// </summary>
+        /// <param name="constant"></param>
+        /// <param name="multiple"></param>
+        private void PrecalcValues(out float[] constant, out float[] multiple)
+        {
+            constant = new float[points.Count];
+            multiple = new float[points.Count];
+
+            int i, j = points.Count - 1;
+
+            for (i = 0; i < points.Count; i++)
+            {
+                if (points[j].Y == points[i].Y)
+                {
+                    constant[i] = points[i].X;
+                    multiple[i] = 0;
+                }
+                else
+                {
+                    constant[i] = points[i].X -
+                        (points[i].Y * points[j].X / (points[j].Y - points[i].Y)) +
+                        (points[i].Y * points[i].X / (points[j].Y - points[i].Y));
+                    multiple[i] = (points[j].X - points[i].X) /
+                        (points[j].Y - points[i].Y);
+                }
+                j = i;
+            }
+        }
+
+        /// <summary>
+        /// this 가 other polygon을 포함하는지 검사
+        /// </summary>
+        /// <param name="other"></param>
+        /// <returns>포함하면 true</returns>
+        public bool Contains(Polygon2 other, float tolerance = MathUtil.Epsilon)
+        {
+            if (!Bound.Collide(other.Bound, tolerance))//, eps))
+            {
+                return false;
+            }
+
+            return Contains(other.points);//, eps);
+        }
+    }
+}

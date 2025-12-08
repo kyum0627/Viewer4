@@ -1,0 +1,2260 @@
+﻿using System;
+using System.Collections.Generic;
+using System.Linq;
+using OpenTK.Mathematics;
+using IGX.Geometry.Common;
+using IGX.Geometry.Distance;
+using IGX.Geometry.ConvexHull;
+
+namespace IGX.Geometry.Intersect
+{
+    public enum Located
+    {
+        IsInside,
+        IsOnEdge,
+        NoIntersection
+    }
+    /// <summary>
+    /// 두 선(선분)이 교차하는지 검토
+    /// http://thirdpartyninjas.com/blog/2008/10/07/line-default_nsegs-intersection/
+    /// </summary>
+    public class Intersections
+    {
+        /// <summary>
+        /// 다각형의 edge간 교차 계산, hedge (start_point, end_point)
+        /// </summary>
+        /// <param name="e0"></param>
+        /// <param name="e1"></param>
+        /// <returns></returns>
+        public static IntersectionType EdgeEdge(Segment2f e0, Segment2f e1, out IntersectionResult2 result)
+        {
+            //result = new IntersectionResult2();
+            SegmentSegment(new Segment2f(e0.P0, e0.P1), new Segment2f(e1.P0, e1.P1), out result, MathUtil.ZeroTolerance);
+            return result.type;
+        }
+
+        /// <summary>
+        /// 2D 면을 양분하는 halfspace에 의거 polygon을 clipping
+        /// </summary>
+        /// <param name="halfspace">양분 기준선의 norID(법선, 방향), constant(경계지점)로 구성</param>
+        /// <param name="polygon"></param>
+        /// <param name="result">교차 유형, point, line, default_nsegs, ... polygon</param>
+        /// <returns></returns>
+        public static IntersectionType ClipPolygonByHalfSpace(HalfSpace2 halfspace, List<Vector2> polygon, out IntersectionResult2 result)
+        {
+            result = new IntersectionResult2();
+            int numVertices = polygon.Count;
+            float[] distance = new float[numVertices];
+            int positive = 0, negative = 0, positiveIndex = -1;
+
+            result.points = new List<Vector2>();
+
+            for (int i = 0; i < numVertices; ++i)
+            {
+                distance[i] = Vector2.Dot(halfspace.normal, polygon[i]) - halfspace.constant;
+                if (distance[i] > 0f)
+                {
+                    ++positive;
+                    if (positiveIndex == -1)
+                    {
+                        positiveIndex = i;
+                    }
+                }
+                else if (distance[i] < 0f)
+                {
+                    ++negative;
+                }
+            }
+
+            if (positive == 0)
+            { // 0 ControlPoints
+                result.type = IntersectionType.NONE;
+                result.status = IntersectionResult.NOTINTERSECT;
+                result.quantity = 0;
+                return IntersectionType.EMPTY;
+            }
+
+            if (negative == 0)
+            { // all ControlPoints
+                result.type = IntersectionType.POLYGON;
+                result.points.AddRange(polygon);
+                result.quantity = polygon.Count;
+                result.status = IntersectionResult.NOTINTERSECT;
+                return IntersectionType.POLYGON;
+            }
+
+            Vector2 vertex;
+            int curr, prev;
+            float t;
+
+            if (positiveIndex > 0)
+            {
+                curr = positiveIndex;
+                prev = curr - 1;
+                t = distance[curr] / (distance[curr] - distance[prev]);
+                vertex = polygon[curr] + (t * (polygon[prev] - polygon[curr]));
+                result.points.Add(vertex);
+
+                while (curr < numVertices && distance[curr] > 0f)
+                {
+                    result.points.Add(polygon[curr++]);
+                }
+
+                if (curr < numVertices)
+                {
+                    prev = curr - 1;
+                }
+                else
+                {
+                    curr = 0;
+                    prev = numVertices - 1;
+                }
+                t = distance[curr] / (distance[curr] - distance[prev]);
+                vertex = polygon[curr] + (t * (polygon[prev] - polygon[curr]));
+                result.points.Add(vertex);
+            }
+            else
+            {
+                curr = 0;
+                while (curr < numVertices && distance[curr] > 0f)
+                {
+                    result.points.Add(polygon[curr++]);
+                }
+                prev = curr - 1;
+                t = distance[curr] / (distance[curr] - distance[prev]);
+                vertex = polygon[curr] + (t * (polygon[prev] - polygon[curr]));
+                result.points.Add(vertex);
+
+                while (curr < numVertices && distance[curr] <= 0f)
+                {
+                    curr++;
+                }
+                if (curr < numVertices)
+                {
+                    prev = curr - 1;
+                    t = distance[curr] / (distance[curr] - distance[prev]);
+                    vertex = polygon[curr] + (t * (polygon[prev] - polygon[curr]));
+                    result.points.Add(vertex);
+                    while (curr < numVertices && distance[curr] > 0f)
+                    {
+                        result.points.Add(polygon[curr++]);
+                    }
+                }
+                else
+                {
+                    curr = 0;
+                    prev = numVertices - 1;
+                    t = distance[curr] / (distance[curr] - distance[prev]);
+                    vertex = polygon[curr] + (t * (polygon[prev] - polygon[curr]));
+                    result.points.Add(vertex);
+                }
+            }
+            result.status = IntersectionResult.INTERSECT;
+            result.quantity = result.points.Count;
+            return IntersectionType.POLYGON;
+        }
+
+        /// <summary>
+        /// 3D 공간을 양분하는 면으로 3D Segment를 clipping
+        /// </summary>
+        /// <param name="halfspace"></param>
+        /// <param name="segment"></param>
+        /// <param name="result"></param>
+        /// <returns></returns>
+        public static IntersectionType ClipSegmentByHalfSpace(HalfSpace3 halfspace, Segment3f segment, out IntersectionResult3 result)
+        {
+            result = new IntersectionResult3();
+
+            // nID = numNegative, norID 반대
+            // pID = numPositive, norID 방향
+            // z = numZero. halfspace 경계
+            //   nID pID z  intersection
+            //   -------------------------
+            //   0 2 0  default_nsegs (original)
+            //   0 1 1  default_nsegs (original)
+            //   0 0 2  default_nsegs (original)
+            //   1 1 0  default_nsegs (clipped)
+            //   1 0 1  point (endpoint)
+            //   2 0 0  none
+
+            float[] s = new float[2];
+            int numPositive = 0, numNegative = 0, numZero = 0;
+
+            Vector3[] p = new Vector3[2] { segment.P0, segment.P1 };
+            result.points = new List<Vector3>();
+
+            for (int i = 0; i < 2; ++i)
+            {
+                s[i] = Vector3.Dot(halfspace.normal, p[i]) - halfspace.constant;
+                if (s[i] > 0f)
+                {
+                    ++numPositive;
+                }
+                else if (s[i] < 0f)
+                {
+                    ++numNegative;
+                }
+                else
+                {
+                    ++numZero;
+                }
+            }
+
+            if (numNegative == 0)
+            {
+                // halfspace 내부
+                result.type = IntersectionType.SEGMENT;
+                result.status = IntersectionResult.INTERSECT;
+                result.quantity = 2;
+                result.points.Add(p[0]);
+                result.points.Add(p[1]);
+            }
+            else if (numNegative == 1)
+            {
+                result.type = IntersectionType.POINT;
+                result.status = IntersectionResult.INTERSECT;
+                result.quantity = 1;
+                if (numPositive == 1)
+                {
+                    // 교차
+                    result.points.Add(p[0] + (s[0] / (s[0] - s[1]) * (p[1] - p[0])));
+                }
+                else  // numZero = 1
+                {
+                    // 한 점이 halfspace 경계에 걸침
+                    if (s[0] == 0f)
+                    {
+                        result.points.Add(p[0]);
+                    }
+                    else
+                    {
+                        result.points.Add(p[1]);
+                    }
+                }
+            }
+            else  // numNegative == 2
+            {
+                // segment가 halfspace 밖에 존재 (numNegative == 2)
+                result.type = IntersectionType.EMPTY;
+                result.status = IntersectionResult.NOTINTERSECT;
+                result.quantity = 0;
+            }
+
+            return result.type;
+        }
+
+        /// <summary>
+        /// 3D 공간을 양분하는 면으로 삼각형을 분할
+        /// </summary>
+        /// <param name="halfspace"></param>
+        /// <param name="triangle"></param>
+        /// <param name="result">점, 선, 삼각형, 사각형</param>
+        /// <returns></returns>
+        public static IntersectionType ClipTriangleByHalfSpace(HalfSpace3 halfspace, Triangle3f triangle, out IntersectionResult3 result)
+        {
+            result = new IntersectionResult3();
+
+            // nID = numNegative, norID 반대
+            // pID = numPositive, norID 방향
+            // z = numZero. halfspace 경계
+            //   nID pID z  intersection
+            //   ---------------------------------
+            //   0 3 0  triangle (original)
+            //   0 2 1  triangle (original)
+            //   0 1 2  triangle (original)
+            //   0 0 3  triangle (original)
+            //   1 2 0  quad (2 halfedgeSet clipped)
+            //   1 1 1  triangle (1 hedge clipped)
+            //   1 0 2  hedge
+            //   2 1 0  triangle (2 halfedgeSet clipped)
+            //   2 0 1  vertex
+            //   3 0 0  none
+
+            float[] s = new float[3];
+            int numPositive = 0, numNegative = 0, numZero = 0;
+            result.points = new Vector3[4].ToList();
+
+            for (int i = 0; i < 3; ++i)
+            {
+                s[i] = Vector3.Dot(halfspace.normal, triangle[i]) - halfspace.constant;
+                if (s[i] > 0f)
+                {
+                    ++numPositive;
+                }
+                else if (s[i] < 0f)
+                {
+                    ++numNegative;
+                }
+                else
+                {
+                    ++numZero;
+                }
+            }
+
+            if (numNegative == 0)
+            {
+                // 삼각형은 halfspace 내부에 존재
+                result.type = IntersectionType.POLYGON;
+                result.status = IntersectionResult.INTERSECT;
+                result.quantity = 3;
+                result.points[0] = triangle[0];
+                result.points[1] = triangle[1];
+                result.points[2] = triangle[2];
+            }
+            else if (numNegative == 1)
+            {
+                result.status = IntersectionResult.INTERSECT;
+                if (numPositive == 2)
+                {
+                    // 삼각형을 자른 후 생성된 사각형 부분이 halfspace 내부에 존재
+                    result.quantity = 4;
+                    result.type = IntersectionType.POLYGON;
+                    for (int i0 = 0; i0 < 3; ++i0)
+                    {
+                        if (s[i0] < 0f)
+                        {
+                            int i1 = (i0 + 1) % 3, i2 = (i0 + 2) % 3;
+                            result.points[0] = triangle[i1];
+                            result.points[1] = triangle[i2];
+                            float t2 = s[i2] / (s[i2] - s[i0]);
+                            float t0 = s[i0] / (s[i0] - s[i1]);
+                            result.points[2] = triangle[i2] + (t2 * (triangle[i0] - triangle[i2]));
+                            result.points[3] = triangle[i0] + (t0 * (triangle[i1] - triangle[i0]));
+                            break;
+                        }
+                    }
+                }
+                else if (numPositive == 1)
+                {
+                    // 삼각형을 자른 후 생성된 삼각형 부분이 halfspace 내부에 존재
+                    result.quantity = 3;
+                    result.type = IntersectionType.POLYGON;
+                    for (int i0 = 0; i0 < 3; ++i0)
+                    {
+                        if (s[i0] == 0f)
+                        {
+                            int i1 = (i0 + 1) % 3, i2 = (i0 + 2) % 3;
+                            result.points[0] = triangle[i0];
+                            float t1 = s[i1] / (s[i1] - s[i2]);
+                            Vector3 p = triangle[i1] + (t1 * (triangle[i2] - triangle[i1]));
+                            if (s[i1] > 0f)
+                            {
+                                result.points[1] = triangle[i1];
+                                result.points[2] = p;
+                            }
+                            else
+                            {
+                                result.points[1] = p;
+                                result.points[2] = triangle[i2];
+                            }
+                            break;
+                        }
+                    }
+                }
+                else
+                { // number of zero = 2
+                  // 삼각형을 구성하는 모서리중 하나가 halfspace를 구분하는 평면 위에 존재.
+                    result.quantity = 0;
+                    result.type = IntersectionType.EMPTY;
+                    for (int i = 0; i < 3; ++i)
+                    {
+                        if (s[i] == 0f)
+                        {
+                            result.points[result.quantity++] = triangle[i];
+                        }
+                    }
+                }
+            }
+            else if (numNegative == 2)
+            {
+                result.status = IntersectionResult.INTERSECT;
+                if (numPositive == 1)
+                {
+                    // 삼각형을 자른 후 생성된 삼각형 부분이 halfspace 내부에 존재
+                    result.quantity = 3;
+                    result.type = IntersectionType.POLYGON;
+                    for (int i0 = 0; i0 < 3; ++i0)
+                    {
+                        if (s[i0] > 0f)
+                        {
+                            int i1 = (i0 + 1) % 3, i2 = (i0 + 2) % 3;
+                            result.points[0] = triangle[i0];
+                            float t0 = s[i0] / (s[i0] - s[i1]);
+                            float t2 = s[i2] / (s[i2] - s[i0]);
+                            result.points[1] = triangle[i0] + (t0 * (triangle[i1] - triangle[i0]));
+                            result.points[2] = triangle[i2] + (t2 * (triangle[i0] - triangle[i2]));
+                            break;
+                        }
+                    }
+                }
+                else
+                {
+                    // 삼각형을 구성하는 점중 하나가 halfspace 구성면 위에 존재.
+                    result.quantity = 1;
+                    result.type = IntersectionType.POINT;
+                    for (int i = 0; i < 3; ++i)
+                    {
+                        if (s[i] == 0f)
+                        {
+                            result.points[0] = triangle[i];
+                            break;
+                        }
+                    }
+                }
+            }
+            else  // numNegative == 3
+            {
+                // 삼각형이 halfspace 밖에 존재
+                result.type = IntersectionType.EMPTY;
+                result.status = IntersectionResult.NOTINTERSECT;
+                result.quantity = 0;
+                result.points.Clear();
+            }
+            return result.type;
+        }
+
+        /// <summary>
+        /// line 0 와 line 1 교차 유형 판단 및 교차할 경우 각 line에서 교차점의 paramater 값을 reference 값으로 return
+        /// </summary>
+        /// <param name="P0">line0의 origin</param>
+        /// <param name="D0">line0의 direction</param>
+        /// <param name="Q0">line1의 origin</param>
+        /// <param name="D1">line0의 direction</param>
+        /// <param name="eps">오차한계</param>
+        /// <param name="s">line0 및 line1에서의 교차점의 parameter</param>
+        /// <returns></returns>
+        public static IntersectionType LineLine(Vector2 P0, Vector2 D0, Vector2 Q0, Vector2 D1, out IntersectionResult2 result, float eps = MathUtil.ZeroTolerance)
+        {
+            // Let,
+            // P0 = lile0.origin
+            // P1 = line1.origin
+            // D0 = line0.direction
+            // D1 = line1.direction
+            //
+            // Solve
+            // P0 + s0*D0 = P1 + s1*D1
+            // 즉, s0*D0 - s1*D1 = P1 - P0 = DF
+            // 1. DotPerp(D0, D1)) = 0, parallel
+            //    1.1 DotPerp(DF, D1)) = 0, 두 라인은 겹침
+            //    1.2 DotPerp(DF, D1)) != 0, 평행, 겹치지 않음
+            // 2. DotPerp(D0, D1)) != 0, 두 라인은 다음 점에서 만남
+            //    s0 = DotPerp(DF, D1))/DotPerp(D0, D1))
+            //    s1 = DotPerp(DF, D0))/DotPerp(D0, D1))
+            IntersectionResult2 ires = new();
+            result = ires;
+            result.points = new List<Vector2>();
+
+            Vector2 dF = Q0 - P0;
+            float D0xD1 = D0.PerpDot(D1);
+
+            // 1. 
+            if (Math.Abs(D0xD1) < eps)
+            {   // D0 와 D1이 이루는 각도가 거의 0
+                // 1. 평행
+                dF = Vector2.Normalize(dF);
+                float dFxD1 = dF.PerpDot(D1);
+                if (Math.Abs(dFxD1) < eps)
+                {
+                    // 1.1 겹침
+                    result.type = IntersectionType.LINE;
+                    result.quantity = int.MaxValue;
+                    result.parameter1 = new Interval(-float.MaxValue, float.MaxValue);
+                    result.parameter2 = new Interval(-float.MaxValue, float.MaxValue);
+                    result.points.Add(P0);
+                    result.points.Add(D0);
+                    result.status = IntersectionResult.INTERSECT;
+                    return result.type;
+                }
+                else
+                {
+                    // 1.2 평행하나 겹치지 않음
+                    result.type = IntersectionType.EMPTY;
+                    result.status = IntersectionResult.NOTINTERSECT;
+                    return result.type;
+                }
+            }
+            else
+            {
+                // 2 한점에서 교차
+                float invD0xD1 = 1f / D0xD1;
+                float dFxD1 = dF.PerpDot(D1); // for s0
+                float dFxD0 = dF.PerpDot(D0); // for s1
+                float s0 = dFxD1 * invD0xD1;
+                float s1 = dFxD0 * invD0xD1;
+                result.type = IntersectionType.POINT;
+                result.status = IntersectionResult.INTERSECT;
+                result.quantity = 1;
+                result.points.Add(P0 + (D0 * s0));
+                result.parameter1 = new Interval(s0, s0);
+                result.parameter2 = new Interval(s1, s1);
+                return result.type;
+            }
+        }
+
+        public static IntersectionType LineLine(Vector3 P0, Vector3 dirP, Vector3 Q0, Vector3 dirQ, out IntersectionResult3 result, float eps = MathUtil.Epsilon)
+        {
+            IntersectionResult3 ires = new();
+            result = ires;
+            result.points = new List<Vector3>();
+            result.parameter1 = new Interval();
+            result.parameter2 = new Interval();
+
+            Vector3 cr = dirP.Cross(dirQ);
+            float distance;
+
+            if (Math.Abs(cr.LengthSquared) > eps)
+            {
+                // skew or intersect
+                cr = Vector3.Normalize(cr);
+                if (Math.Abs(Vector3.Dot(cr, P0)) < eps && Math.Abs(Vector3.Dot(cr, Q0)) < eps)
+                {
+                    // intersect
+                    float s0 = Vector3.Dot(Q0 - P0, dirP);
+                    float s1 = Vector3.Dot(P0 - Q0, dirP);
+                    result.quantity = 1;
+                    result.points.Add(P0 + (s0 * dirP));
+                    result.parameter1 = new Interval(s0, s0);
+                    result.parameter2 = new Interval(s1, s1);
+                    result.type = IntersectionType.POINT;
+                    result.status = IntersectionResult.INTERSECT;
+                    return result.type;
+                }
+                result.quantity = 0;
+                result.type = IntersectionType.EMPTY;
+                result.status = IntersectionResult.NOTINTERSECT;
+                return result.type;
+            }
+            else
+            {
+                distance = DistanceManager.PointToLine(P0, Q0, dirQ).distance;
+
+                if (Math.Abs(distance) < eps)
+                { // colinear
+                    result.quantity = int.MaxValue;
+                    result.points.Add(P0);
+                    result.points.Add(Q0);
+                    result.parameter1 = new Interval(-float.MaxValue, float.MaxValue);
+                    result.parameter1 = new Interval(-float.MaxValue, float.MaxValue);
+                    result.type = IntersectionType.LINE;
+                    result.status = IntersectionResult.INTERSECT;
+                    return IntersectionType.LINE;
+                }
+                // parallel
+                result.type = IntersectionType.EMPTY;
+                result.status = IntersectionResult.NOTINTERSECT;
+                return result.type;
+            }
+        }
+
+        /// <summary>
+        /// 2D 평면상의 무한 직선간 교차
+        /// </summary>
+        /// <param name="a">line 1</param>
+        /// <param name="b">line 2</param>
+        /// <param name="result">교차계산 결과</param>
+        /// <param name="eps">교차계산 허용오차</param>
+        /// <returns></returns>
+        public static IntersectionType LineLine(Line2f line0, Line2f line1, out IntersectionResult2 result, float eps = MathUtil.Epsilon)
+        {
+            return LineLine(line0.origin, line0.direction, line1.origin, line1.direction, out result, eps);
+        }
+
+        /// <summary>
+        /// 3D 공간상의 직선간 교차
+        /// </summary>
+        /// <param name="origin0">직선1의 원점</param>
+        /// <param name="direction0">직선1의 방향 벡터</param>
+        /// <param name="origin2">직선2의 원점</param>
+        /// <param name="direction2">직선2의 방향 벡터</param>
+        /// <param name="result"></param>
+        /// <param name="includeEndPoints"></param>
+        /// <param name="eps"></param>
+        /// <returns>점, 무한직선</returns>
+        public static IntersectionType LineLine(Line3f line0, Line3f line1, out IntersectionResult3 result, float eps = MathUtil.Epsilon)
+        {
+            return LineLine(line0.origin, line0.direction, line1.origin, line1.direction, out result, eps);
+        }
+
+        /// <summary>
+        /// line, segment간 교차
+        /// </summary>
+        /// <param name="line"></param>
+        /// <param name="segment"></param>
+        /// <param name="result"></param>
+        /// <param name="includeEndPoints"></param>
+        /// <param name="eps"></param>
+        /// <returns>점, 선분</returns>
+        public static IntersectionType LineSegment(Line2f line, Segment2f segment, out IntersectionResult2 result, float eps = MathUtil.ZeroTolerance)
+        {
+            result.type = LineLine(line.origin, line.direction, segment.center, segment.direction, out result, eps);
+
+            switch (result.type)
+            {
+                case IntersectionType.POINT:
+                    if (Math.Abs(result.parameter2.a) > segment.extent)
+                    { // parameter 값이 segment의 길이 이내(parametric value 0 ~ 1)에 들어오지 않으면 교차하지 않음
+                        result.status = IntersectionResult.NOTINTERSECT;
+                        result.type = IntersectionType.EMPTY;
+                        result.points.Clear();
+                    }
+                    break;
+                case IntersectionType.LINE:
+                    result.status = IntersectionResult.INTERSECT;
+                    result.type = IntersectionType.SEGMENT;
+                    result.points = new List<Vector2> { segment.P0, segment.P1 };
+                    result.parameter2 = new Interval(-segment.extent, segment.extent);
+                    result.quantity = int.MaxValue;
+                    break;
+                default:
+                    break;
+            }
+            return result.type;
+        }
+
+        public static IntersectionType LineSegment(Line3f line, Segment3f segment, out IntersectionResult3 result, float eps = MathUtil.ZeroTolerance)
+        {
+            result.type = LineLine(line.origin, line.direction, segment.center, segment.direction, out result, eps);
+
+            switch (result.type)
+            {
+                case IntersectionType.POINT:
+                    if (Math.Abs(result.parameter2.a) > segment.extent)
+                    { // parameter 값이 segment의 길이 이내(parametric value 0 ~ 1)에 들어오지 않으면 교차하지 않음
+                        result.status = IntersectionResult.NOTINTERSECT;
+                        result.type = IntersectionType.EMPTY;
+                        result.points.Clear();
+                    }
+                    break;
+                case IntersectionType.LINE:
+                    result.status = IntersectionResult.INTERSECT;
+                    result.type = IntersectionType.SEGMENT;
+                    result.points = new List<Vector3> { segment.P0, segment.P1 };
+                    result.parameter2 = new Interval(-segment.extent, segment.extent);
+                    result.quantity = int.MaxValue;
+                    break;
+                default:
+                    break;
+            }
+            return result.type;
+        }
+
+        /// <summary>
+        /// default_nsegs, segment간 교차
+        /// </summary>
+        /// <param name="segment0"></param>
+        /// <param name="segment1"></param>
+        /// <param name="result"></param>
+        /// <param name="eps"></param>
+        /// <returns>점, 선분</returns>
+        public static Segment2f SegmentSegment(Segment2f s1, Segment2f s2, float epsilon = MathUtil.ZeroTolerance)
+        {
+            float d1 = Vector2.Dot(s1.direction, s2.P0 - s1.center);
+            float d11 = (s2.P0 - s1.center - (s1.direction * d1)).Length;
+            float d2 = Vector2.Dot(s1.direction, s2.P1 - s1.center);
+            float d21 = (s2.P1 - s1.center - (s1.direction * d2)).Length;
+
+            Segment2f ss = new();
+
+            if (d11 < epsilon && d21 < epsilon)
+            {
+                d1 = Vector2.Dot(s1.direction, s2.P0 - s1.center);
+                d2 = Vector2.Dot(s1.direction, s2.P1 - s1.center);
+
+                Interval intv1 = new(Math.Min(d1, d2), Math.Max(d1, d2));
+                Interval intv2 = new(-s1.extent, s1.extent);
+                Interval intsc = intv1.Intersect(intv2);
+                return intsc == Interval.Empty || intsc.a == intsc.b
+                    ? ss
+                    : new Segment2f(
+                    s1.center + (s1.direction * intsc.a),
+                    s1.center + (s1.direction * intsc.b)
+                    );
+            }
+            return ss;
+        }
+        public static IntersectionType SegmentSegment(Segment2f segment0, Segment2f segment1, out IntersectionResult2 result, float eps = MathUtil.ZeroTolerance)
+        {
+            result = new IntersectionResult2();
+
+            result.type = LineLine(segment0.center, segment0.direction, segment1.center, segment1.direction, out result, eps);
+
+            switch (result.type)
+            {
+                case IntersectionType.POINT:
+                    if (Math.Abs(result.parameter1[0]) <= segment0.extent
+                        && Math.Abs(result.parameter2[0]) <= segment1.extent)
+                    {
+                        result.status = IntersectionResult.INTERSECT;
+                        result.type = IntersectionType.POINT;
+                    }
+                    else
+                    {
+                        result.status = IntersectionResult.NOTINTERSECT;
+                        result.type = IntersectionType.EMPTY;
+                        result.quantity = 0;
+                    }
+                    break;
+                case IntersectionType.LINE:
+                    float t1 = Vector2.Dot(segment1.direction, segment1.P0 - segment0.center);
+                    float t2 = Vector2.Dot(segment1.direction, segment1.P1 - segment0.center);
+
+                    Interval interval0 = new(-segment0.extent, segment0.extent);
+                    Interval interval1 = new(Math.Min(t1, t2), Math.Max(t1, t2));
+                    Interval iiResult = interval0.Intersect(interval1);
+
+                    if (iiResult != Interval.Empty)
+                    {
+                        result.status = IntersectionResult.INTERSECT;
+                        if (iiResult.Length > 1f)
+                        {
+                            result.type = IntersectionType.SEGMENT;
+                            result.parameter1[0] = iiResult.a;
+                            result.parameter1[1] = iiResult.b;
+                            result.points[0] = segment0.center + (result.parameter1[0] * segment0.direction);
+                            result.points[1] = segment0.center + (result.parameter1[1] * segment0.direction);
+                            result.quantity = 2;
+                        }
+                        else
+                        {
+                            result.type = IntersectionType.POINT;
+                            result.parameter1[0] = iiResult.a;
+                            result.parameter1[1] = iiResult.a;
+                            result.points[0] = segment0.center + (result.parameter1[0] * segment0.direction);
+                            result.quantity = 1;
+                        }
+                    }
+                    else
+                    {
+                        result.status = IntersectionResult.NOTINTERSECT;
+                        result.type = IntersectionType.EMPTY;
+                        result.quantity = 0;
+                        result.points.Clear();
+                    }
+                    break;
+                default:
+                    result.quantity = 0;
+                    result.status = IntersectionResult.NOTINTERSECT;
+                    result.type = IntersectionType.EMPTY;
+                    result.points.Clear();
+                    break;
+            }
+            return result.type;
+        }
+
+        /// <summary>
+        /// 선분간 교차
+        /// </summary>
+        /// <param name="segment0"></param>
+        /// <param name="segment1"></param>
+        /// <param name="result"></param>
+        /// <param name="includeEndPoints"></param>
+        /// <param name="eps"></param>
+        /// <returns></returns>
+        public static IntersectionType SegmentSegment(Segment3f segment0, Segment3f segment1, out IntersectionResult3 result, float eps = MathUtil.ZeroTolerance)
+        {
+            IntersectionResult3 ires = new();
+            result = ires;
+            result.points = new List<Vector3>();
+
+            LineLine(segment0.center, segment0.direction, segment1.center, segment1.direction, out result, eps);
+
+            switch (result.type)
+            {
+                case IntersectionType.POINT:
+                    if (Math.Abs(result.parameter1[0]) <= segment0.extent
+                        && Math.Abs(result.parameter2[0]) <= segment1.extent)
+                    {
+                        result.status = IntersectionResult.INTERSECT;
+                        result.type = IntersectionType.POINT;
+                    }
+                    else
+                    {
+                        result.status = IntersectionResult.NOTINTERSECT;
+                        result.type = IntersectionType.EMPTY;
+                        result.quantity = 0;
+                    }
+                    break;
+                case IntersectionType.LINE:
+                    Vector3 diff = segment1.center - segment0.center;
+                    float t = Vector3.Dot(segment0.direction, diff);
+
+                    Interval interval0 = new(-segment0.extent, segment0.extent);
+                    Interval interval1 = new(-segment1.extent + t, segment1.extent + t);
+                    Interval iiResult = interval0.Intersect(interval1);
+
+                    if (iiResult != Interval.Empty)
+                    {
+                        result.type = IntersectionType.SEGMENT;
+                        result.status = IntersectionResult.INTERSECT;
+                        result.parameter1[0] = iiResult.a;
+                        result.parameter2[0] = iiResult.a - t;
+                        result.parameter1[1] = iiResult.b;
+                        result.parameter2[1] = iiResult.b - t;
+                        result.points[0] = segment0.center + (segment0.direction * iiResult.a);
+                        result.points[1] = segment0.center + (segment0.direction * iiResult.b);
+                        result.quantity = 2;
+                    }
+                    else
+                    {
+                        result.status = IntersectionResult.NOTINTERSECT;
+                        result.type = IntersectionType.EMPTY;
+                        result.quantity = 0;
+                        result.points.Clear();
+                    }
+                    break;
+                default:
+                    result.quantity = 0;
+                    result.status = IntersectionResult.NOTINTERSECT;
+                    result.type = IntersectionType.EMPTY;
+                    result.points.Clear();
+                    break;
+            }
+            return result.type;
+        }
+
+        public static IntersectionType LineTriangle(Line2f line, Triangle2 triangle, out IntersectionResult2 result)
+        {
+            IntersectLine2Triangle2 ltQuery = new(line, triangle);
+            ltQuery.Compute();
+            result = ltQuery.result;
+            return result.type;
+        }
+
+        public static IntersectionType LineTriangle(Line3f line, Triangle3f triangle, out IntersectionResult3 result)
+        {
+            IntersectLine3Triangle3 ltQuery = new(line, triangle);
+            ltQuery.Compute();
+            result = ltQuery.result;
+            return result.type;
+        }
+
+        public static IntersectionType SegmentBox(Segment3f segment, OOBB3 box, out IntersectionResult3 result)
+        {
+            IntersectSeg3OOBB3 sbQuery = new(segment, box, true);
+            sbQuery.Compute();
+            result = sbQuery.result;
+            return result.type;
+        }
+
+        /// <summary>
+        /// 2D 선분과 polygon간 교차
+        /// </summary>
+        /// <param name="segment"></param>
+        /// <param name="polygon"></param>
+        /// <param name="segs"></param>
+        /// <param name="includeEndPoints"></param>
+        /// <param name="eps"></param>
+        /// <returns></returns>
+        public static IntersectionType SegmentPolygon(Segment2f segment, Polygon2 polygon, out List<Segment2f> segs, float eps = MathUtil.ZeroTolerance)
+        {
+            List<Tuple<float, Vector2>> pts = new();
+            IntersectionType ity;// = new IntersectionType();
+
+            pts.Add(new Tuple<float, Vector2>(-segment.extent, segment.P0));
+            pts.Add(new Tuple<float, Vector2>(segment.extent, segment.P1));
+
+            foreach (Segment2f s in polygon.GetSegments())
+            {
+                IntersectionResult2 ires = new();
+                IntersectionResult2 res = ires;
+                res.points = new List<Vector2>();
+                if (SegmentSegment(segment, s, out res, eps) != IntersectionType.EMPTY)
+                {
+                    pts.Add(new Tuple<float, Vector2>(res.parameter1[0], res.points[0]));
+                    if (res.quantity == 2)
+                    {
+                        pts.Add(new Tuple<float, Vector2>(res.parameter1[1], res.points[1]));
+                    }
+                }
+            }
+
+            pts.Sort((a, b) => a.Item1.CompareTo(b.Item1));
+            for (int i = 1; i < pts.Count; i++)
+            {
+                if (pts[i].Item2 == pts[i - 1].Item2)
+                {
+                    pts[i - 1] = pts[i];
+                }
+            }
+            pts = pts.Distinct().ToList();
+
+            ity = IntersectionType.NONE;
+            segs = new List<Segment2f>();
+
+            for (int i = 0; i < pts.Count - 1; i++)
+            {
+                Segment2f test = new(pts[i].Item2, pts[(i + 1) % pts.Count].Item2);
+                if (polygon.Bound.Collide(test.GetBounds()))
+                {
+                    if (GeometricTools.WindingNumber(polygon.points, test.center))
+                    {
+                        segs.Add(test);
+                        ity = IntersectionType.SEGMENT;
+                    }
+                }
+            }
+
+            if (segs.Count > 1)
+            {
+                ity = IntersectionType.POLYLINE;
+            }
+
+            return ity;
+        }
+
+        public static IntersectionType SegmentPolygon(Segment3f b, Polygon3 poly, ref List<Segment3f> segs, float eps = MathUtil.ZeroTolerance)
+        {
+            IntersectionType ity;// = new IntersectionType();
+            ity = IntersectionType.NONE;
+
+            Vector3 normal;// = new Vector3();
+            normal = poly.plane.normal;
+            int ig = normal.MaxLengthCoordinate();
+
+            Polygon2 poly2 = poly.Get2dPolygon(ig);
+            Segment2f seg2 = b.Get2dSegment(ig);
+
+            SegmentPolygon(seg2, poly2, out List<Segment2f> result2, eps);
+
+            foreach (Segment2f s in result2)
+            {
+                segs.Add(To3D(poly.plane, s, ig));
+                ity = IntersectionType.SEGMENT;
+            }
+
+            return ity;
+        }
+
+        public static Segment3f PlaneSquare(Plane3f plane, Polygon3 square)
+        {
+            Segment3f seg = new();
+            if (square.points.Count != 4)
+            {
+                return seg;
+            }
+
+            Triangle3f[] rect = new Triangle3f[2]
+            {
+            new(square.points[0], square.points[1], square.points[2]),
+            new(square.points[2], square.points[3], square.points[1])
+            };
+            List<Vector3> pts = new();
+
+            IntersectionType itstype1 = PlaneTriangle(plane, rect[0], out IntersectionResult3 result1);
+            IntersectionType itstype2 = PlaneTriangle(plane, rect[1], out IntersectionResult3 result2);
+
+            //IntersectionType itst = IntersectionType.NONE;
+
+            if (itstype1 == IntersectionType.SEGMENT)
+            {
+                pts.Add(result1.points[0]);
+                pts.Add(result1.points[1]);
+                //itst = IntersectionType.SEGMENT;
+            }
+            if (itstype2 == IntersectionType.SEGMENT)
+            {
+                //itst = IntersectionType.SEGMENT;
+                for (int i = 0; i < 2; i++)
+                {
+                    if (!pts.Contains(result2.points[i]))
+                    {
+                        pts.Add(result2.points[i]);
+                    }
+                }
+            }
+            if (pts.Count > 1)
+            {
+                pts.Sort((a, b) => a.CompareTo(b));
+                //itst = IntersectionType.SEGMENT;
+                seg = new Segment3f(pts[0], pts[^1]);
+            }
+
+            return seg;
+        }
+
+        public static IntersectionType PlaneEdge(Plane2f plane, Segment2f line, out Vector2 intersectionPoint)
+        {
+            Vector2 lineDir = Vector2.Normalize(line.P0 - line.P1);
+            Ray2f ray = new(line.P0, lineDir);
+            IntersectionType test = PlaneRay(plane, ray, out intersectionPoint);
+
+            return test;
+        }
+        public static IntersectionType PlaneLine(Plane3f plane, Line3f line, out IntersectionResult3 result, float tolerance = MathUtil.EpsilonAngleR)
+        {
+            result = new IntersectionResult3();
+            float L0 = Vector3.Dot(line.origin, plane.normal);
+
+            if (L0 < tolerance) // parallel
+            {
+                if (Math.Abs(plane.constant - L0) < tolerance) // this 라인은 평면내에 존재
+                {
+                    result.status = IntersectionResult.INTERSECT;
+                    result.type = IntersectionType.LINE;
+                    result.quantity = int.MaxValue;
+                    List<Vector3> vector3fs = new();
+                    result.points = vector3fs;
+                    result.points.Add(line.origin);
+                    result.parameter2[0] = -float.MaxValue;
+                    result.parameter2[1] = float.MaxValue;
+                    return IntersectionType.SEGMENT;
+                }
+                else
+                {
+                    result.status = IntersectionResult.NOTINTERSECT;
+                    result.type = IntersectionType.EMPTY;
+                    return result.type;
+                }
+            }
+            else // 한 점에서 만남
+            {
+                result.status = IntersectionResult.INTERSECT;
+                result.type = IntersectionType.POINT;
+                result.quantity = 1;
+                result.parameter2[0] = (plane.constant - L0) / Vector3.Dot(line.direction, plane.normal);
+                List<Vector3> vector3fs = new();
+                result.points = vector3fs;
+                result.points.Add(line.origin + (line.direction * result.parameter2[0]));
+                return result.type;
+            }
+        }
+
+        /// <summary>
+        /// this 면과 other면의 교차 계산
+        /// </summary>
+        /// <param name="other"></param>
+        /// <param name="line">교차 선</param>
+        /// <returns>교차하지 않으면 0, 겹치면 1, 직선으로 만나면 2</returns>
+        public static IntersectionType PlanePlane(Plane3f plane, Plane3f other, out Line3f line, float eps = MathUtil.Epsilon)
+        {
+            //Plane3f Pn1 = new Plane3f(this);
+            Vector3 u = Vector3.Cross(plane.normal, other.normal);
+
+            line = new Line3f();
+
+            float ax = u.X >= 0 ? u.X : -u.X;
+            float ay = u.Y >= 0 ? u.Y : -u.Y;
+            float az = u.Z >= 0 ? u.Z : -u.Z;
+
+            if (ax + ay + az < eps) // 면이 평행한지 검사
+            {
+                Vector3 v = (other.normal * other.constant) - (plane.normal * plane.constant);
+                if (Math.Abs(Vector3.Dot(plane.normal, v)) < eps)  // Pn2 원점이 Pn1 에 있나?
+                {
+                    return IntersectionType.PLANE;                // 두 면은 겹침
+                }
+                else
+                {
+                    return IntersectionType.EMPTY;                // 두 면은 만나지 않음
+                }
+            }
+
+            //두 면이 선으로 만남
+            float h1 = plane.constant;
+            float h2 = other.constant;
+            float c1;
+            float c2;
+
+            float n1Dotn2 = Vector3.Dot(plane.normal, other.normal);
+            float n1Dotn2Sqr = n1Dotn2 * n1Dotn2;
+
+            c1 = (h1 - (h2 * n1Dotn2)) / (1 - n1Dotn2Sqr);
+            c2 = (h2 - (h1 * n1Dotn2)) / (1 - n1Dotn2Sqr);
+
+            Vector3 iP;// = new Vector3();
+
+            iP = (c1 * plane.normal) + (c2 * other.normal);
+            line.origin = iP;
+            line.direction = Vector3.Normalize(u);
+
+            return IntersectionType.LINE;
+        }
+
+        public static IntersectionType PlaneRay(Plane2f plane, Ray2f ray, out Vector2 intersectionPoint)
+        {
+            intersectionPoint = new Vector2();
+
+            float denominator = Vector2.Dot(-plane.normal, ray.direction);
+            if (Math.Abs(denominator) < MathUtil.ZeroTolerance)
+            {
+                return IntersectionType.EMPTY;
+            }
+
+            Vector2 vecBetween = plane.V0 - ray.origin;
+            float t = Vector2.Dot(vecBetween, -plane.normal) / denominator;
+            intersectionPoint = ray.origin + (ray.direction * t);
+
+            return IntersectionType.POINT;
+        }
+
+        //3d
+        public static IntersectionType PlaneRay(Plane3f plane, Ray3f ray, out Vector3 intersectionPoint)
+        {
+            float denominator = Vector3.Dot(-plane.normal, ray.direction);
+            intersectionPoint = new Vector3();
+
+            if (Math.Abs(denominator) < MathUtil.ZeroTolerance)
+            {
+                return IntersectionType.EMPTY;
+            }
+
+            Vector3 vecBetween = plane.V0 - ray.origin;
+            float t = Vector3.Dot(vecBetween, -plane.normal) / denominator;
+            intersectionPoint = ray.origin + (ray.direction * t);
+
+            return IntersectionType.POINT;
+        }
+
+        public static IntersectionType PlaneSeg(Plane3f plane, Segment3f segment, out Vector3 intersectionPoint)
+        {
+            Vector3 direction = segment.direction;
+            Ray3f ray = new(segment.P0, direction);
+
+            PlaneRay(plane, ray, out intersectionPoint);
+
+            float t = segment.GetParameter(intersectionPoint);
+
+            return t >= -segment.extent && t <= segment.extent ? IntersectionType.POINT : IntersectionType.EMPTY;
+        }
+
+        public static IntersectionType PlaneTriangle(Plane3f plane, Triangle3f triangle, out IntersectionResult3 result)
+        {
+            result = new IntersectionResult3();
+
+            // nID = numNegative, norID 반대
+            // pID = numPositive, norID 방향
+            // z = numZero. halfspace 경계
+            //   nID pID z  intersection
+            //   ---------------------------------
+            //   0 3 0  triangle (original)
+            //   0 2 1  triangle (original)
+            //   0 1 2  triangle (original)
+            //   0 0 3  triangle (original)
+            //   1 2 0  quad (2 halfedgeSet clipped)
+            //   1 1 1  triangle (1 hedge clipped)
+            //   1 0 2  hedge
+            //   2 1 0  triangle (2 halfedgeSet clipped)
+            //   2 0 1  vertex
+            //   3 0 0  none
+
+            float[] s = new float[3];
+            int numPositive = 0, numNegative = 0, numZero = 0;
+            result.points = new Vector3[4].ToList();
+
+            for (int i = 0; i < 3; ++i)
+            {
+                s[i] = Vector3.Dot(plane.normal, triangle[i]) - plane.constant; // 삼각형의 꼭지점 i 와 평면간 거리(+, -)
+                if (s[i] > 0f)
+                {
+                    ++numPositive;
+                }
+                else if (s[i] < 0f)
+                {
+                    ++numNegative;
+                }
+                else
+                {
+                    ++numZero;
+                }
+            }
+
+            if (numNegative == 0 || numPositive == 0)
+            {
+                // 모든 점이 기준면의 상부 혹은 하부에 치우쳐서 존재, 교차하지 않음
+                result.type = IntersectionType.NONE;
+                result.status = IntersectionResult.NOTINTERSECT;
+                result.quantity = 0;
+            }
+            else if (numNegative == 1)
+            {   // 한 점만 평면의 반대측에 존재, 삼각형의 한 선분이 면 위에 혹은 positiv 방향에 존재 
+                result.status = IntersectionResult.INTERSECT;
+                if (numPositive == 2)
+                { //  두 점은 평면 + 측에 위치, 삼각형과 평면은 서로 선분 교차
+                    result.quantity = 2;
+                    result.type = IntersectionType.SEGMENT;
+                    for (int i0 = 0; i0 < 3; ++i0)
+                    {
+                        if (s[i0] < 0f)
+                        { // 점 i0가 기준면 반대편에 위치, 나머진 + 측에 위치
+                            int i1 = (i0 + 1) % 3, i2 = (i0 + 2) % 3;
+                            float t2 = s[i2] / (s[i2] - s[i0]); // 교점 1 
+                            float t0 = s[i0] / (s[i0] - s[i1]); // 교점 2
+                            result.points[0] = triangle[i2] + (t2 * (triangle[i0] - triangle[i2]));
+                            result.points[1] = triangle[i0] + (t0 * (triangle[i1] - triangle[i0]));
+                            break;
+                        }
+                    }
+                }
+                else if (numPositive == 1)
+                {   // 삼각형의 각점이 기준면 반대, 위, 측에 각각 한개씩 존재, 선분 교차
+                    result.quantity = 2;
+                    result.type = IntersectionType.SEGMENT;
+                    for (int i0 = 0; i0 < 3; ++i0)
+                    {
+                        if (s[i0] == 0f)
+                        { // 점 i0가 평면 위에 나머지는 각각 +, -에 하나씩 존재
+                            int i1 = (i0 + 1) % 3, i2 = (i0 + 2) % 3;
+                            result.points[0] = triangle[i0];
+                            float t1 = s[i1] / (s[i1] - s[i2]);
+                            Vector3 p = triangle[i1] + (t1 * (triangle[i2] - triangle[i1]));
+                            result.points[1] = p;
+                            break;
+                        }
+                    }
+                }
+                else
+                {
+                    // 나머지 두 점이 평면위에 존재
+                    result.quantity = 2;
+                    result.type = IntersectionType.SEGMENT;
+                    for (int i0 = 0; i0 < 3; ++i0)
+                    {
+                        if (s[i0] < 0f)
+                        { // 점 i0가 평면 위에 나머지는 각각 +, -에 하나씩 존재
+                            int i1 = (i0 + 1) % 3, i2 = (i0 + 2) % 3;
+                            result.points[0] = triangle[i1];
+                            result.points[1] = triangle[i2];
+                            break;
+                        }
+                    }
+                }
+            }
+            else if (numNegative == 2)
+            {
+                result.status = IntersectionResult.INTERSECT;
+                if (numPositive == 1)
+                {
+                    result.quantity = 2;
+                    result.type = IntersectionType.SEGMENT;
+                    for (int i0 = 0; i0 < 3; ++i0)
+                    {
+                        if (s[i0] > 0f)
+                        {
+                            int i1 = (i0 + 1) % 3, i2 = (i0 + 2) % 3;
+                            float t0 = s[i0] / (s[i0] - s[i1]);
+                            float t2 = s[i2] / (s[i2] - s[i0]);
+                            result.points[0] = triangle[i0] + (t0 * (triangle[i1] - triangle[i0]));
+                            result.points[1] = triangle[i2] + (t2 * (triangle[i0] - triangle[i2]));
+                            break;
+                        }
+                    }
+                }
+            }
+            else  // numNegative == 3
+            {
+                // The triangle is outside the halfspace. (numNegative == 3)
+                result.type = IntersectionType.EMPTY;
+                result.status = IntersectionResult.NOTINTERSECT;
+                result.quantity = 0;
+                result.points.Clear();
+            }
+            return result.type;
+        }
+
+        public static IntersectionResult2 TriangleTriangle(Triangle2 triangle0, Triangle2 triangle1, out IntersectionResult2 result)
+        {
+            result = new IntersectionResult2();
+
+            int quantity = 3;
+            Vector2[] points = new Vector2[6];
+            result.points = new List<Vector2>();
+            for (int i = 0; i < 3; ++i)
+            {
+                points[i] = triangle1[i];
+            }
+
+            for (int i1 = 2, i0 = 0; i0 < 3; i1 = i0++)
+            {
+                // Clip against hedge <V0id[i1],V0id[i0]>.
+                Vector2 N = new(
+                    triangle0[i1].Y - triangle0[i0].Y,
+                    triangle0[i0].X - triangle0[i1].X);
+                float c = Vector2.Dot(N, triangle0[i1]);
+                ClipConvexPolygonAgainstLine(N, c, ref quantity, ref points);
+                result.quantity = quantity;
+
+                if (quantity == 0)
+                {
+                    // TriangleIndex completely clipped, no intersection occurs.
+                    result.type = IntersectionType.EMPTY;
+                    result.points.Clear();
+                }
+                else if (quantity == 1)
+                {
+                    result.type = IntersectionType.POINT;
+                    result.points.Add(points[0]);
+                    result.status = IntersectionResult.INTERSECT;
+                }
+                else if (quantity == 2)
+                {
+                    result.type = IntersectionType.SEGMENT;
+                    result.points.Add(points[0]);
+                    result.points.Add(points[1]);
+                    result.status = IntersectionResult.INTERSECT;
+                }
+                else
+                {
+                    result.type = IntersectionType.POLYGON;
+                    result.status = IntersectionResult.INTERSECT;
+                    for (int i = 0; i < quantity; i++)
+                    {
+                        result.points.Add(points[i]);
+                    }
+                }
+            }
+            return result;
+        }
+
+        public static IntersectionResult3 TriangleTriangle(Triangle3f triangle0, Triangle3f triangle1, out IntersectionResult3 result)
+        {
+            PlaneTriangle(triangle0.Plane, triangle1, out IntersectionResult3 res1);
+            PlaneTriangle(triangle1.Plane, triangle0, out IntersectionResult3 res2);
+
+            result = new IntersectionResult3()
+            {
+                type = IntersectionType.NONE,
+                quantity = 0,
+                points = new List<Vector3>()
+            };
+
+            if (res1.type == IntersectionType.SEGMENT && res2.type == IntersectionType.SEGMENT)
+            {
+                Segment3f s1 = new(res1.points[0], res1.points[1]);
+                Segment3f s2 = new(res2.points[0], res2.points[1]);
+                SegmentSegment(s1, s2, out result);
+            }
+
+            return result;
+        }
+
+        public static IntersectionResult3 TriangleTriangle2(Triangle3f triangle0, Triangle3f triangle1, out IntersectionResult3 result)
+        {
+            result = IntersectTriangle3Triangle3.Compute(triangle0, triangle1);
+            return result;
+        }
+
+        public static bool IsTriIntersectTri(Triangle2 triangle0, Triangle2 triangle1)
+        {
+            bool res0 = Separated(triangle0, triangle1);
+            bool res1 = Separated(triangle1, triangle0);
+
+            return !res0 && !res1;
+        }
+
+        /// <summary>
+        /// 두 AABB2 가 교차하는지 검토
+        /// </summary>
+        /// <param name="r1"></param>
+        /// <param name="r2"></param>
+        /// <returns></returns>
+        public static bool IsAABBIntersectAABB(AABB2 r1, AABB2 r2)
+        {
+
+            if (r1.Min.X > r2.Max.X) { return false; }
+            else if (r2.Min.X > r1.Max.X) { return false; }
+            else if (r1.Min.Y > r2.Max.Y) { return false; }
+            else if (r2.Min.Y > r1.Max.Y) { return false; }
+
+            return true;
+        }
+
+        /// <summary>
+        /// 폴리곤이 convex인지 검사
+        /// 폴리곤을 형성하는 점의 순서가 sorting되어 있어야 함
+        /// </summary>
+        /// <param name="polygonpoints"></param>
+        /// <returns></returns>
+        public static bool IsConvex(List<Vector2> polygonpoints)
+        {
+            bool isConvex = true;
+            int size = polygonpoints.Count;
+            if (size > 3)
+            {
+                Vector2 s0 = polygonpoints[0];
+                Vector2 s1 = polygonpoints[1];
+                Vector2 s2 = polygonpoints[2];
+                bool openAngle = s1.X - (s0.X * (s2.Y - s0.Y))
+< ((s2.X - s0.X) * (s1.Y - s0.Y));
+
+                int i = 3;
+                while (i < size && isConvex)
+                {
+                    s0 = s1;
+                    s1 = s2;
+                    s2 = polygonpoints[i];
+                    isConvex
+                        = openAngle == ((s1.X - s0.X) * (s2.Y - s0.Y)) < ((s2.X - s0.X) * (s1.Y - s0.Y));
+                    ++i;
+                }
+            }
+            return isConvex;
+        }
+
+        /// <summary>
+        /// pointsdata를 pIndexList 순으로 정렬하여 만들어진 폴리곤의 convex hull 생성
+        /// </summary>
+        /// <param name="pIndexList"></param>
+        /// <param name="pointsdata"></param>
+        /// <returns></returns>
+        public static bool IsConvex(List<int> pIndexList, List<float> pointsdata)
+        {
+            bool isConvex = true;
+            int size = pIndexList.Count;
+            int currentIndex;
+            Vector3 v0 = new();
+            Vector3 v1 = new();
+            int i = 0;
+            while (i < size && isConvex)
+            {
+                currentIndex = pIndexList[i];
+                v0.X = pointsdata[currentIndex * 3];
+                v0.Y = pointsdata[(currentIndex * 3) + 1];
+                v0.Z = pointsdata[(currentIndex * 3) + 2];
+                currentIndex = pIndexList[(i + 1) % size];
+                v1.X = pointsdata[currentIndex * 3];
+                v1.Y = pointsdata[(currentIndex * 3) + 1];
+                v1.Z = pointsdata[(currentIndex * 3) + 2];
+                isConvex = v0.AngleRad(v1) < MathUtil.Pi;
+                ++i;
+            }
+            return isConvex;
+        }
+
+        /// <summary>
+        /// http://thirdpartyninjas.com/blog/2008/10/07/line-default_nsegs-intersection/
+        /// https://www.habrador.com/tutorials/math/5-line-line-intersection/
+        /// </summary>
+        /// <param name="a"></param>
+        /// <param name="b"></param>
+        /// <param name="includeEndPoints"></param>
+        /// <returns></returns>
+        public static bool IsEdgeIntersectEdge(Segment2f a, Segment2f b, bool includeEndPoints)
+        {
+            const float epsilon = MathUtil.ZeroTolerance;
+            bool isIntersecting = false;
+            float denominator = ((b.P1.Y - b.P0.Y) * (a.P1.X - a.P0.X)) - ((b.P1.X - b.P0.X) * (a.P1.Y - a.P0.Y));
+
+            if (Math.Abs(denominator) > epsilon)
+            {
+                float u_a = (((b.P1.X - b.P0.X) * (a.P0.Y - b.P0.Y)) - ((b.P1.Y - b.P0.Y) * (a.P0.X - b.P0.X))) / denominator;
+                float u_b = (((a.P1.X - a.P0.X) * (a.P0.Y - b.P0.Y)) - ((a.P1.Y - a.P0.Y) * (a.P0.X - b.P0.X))) / denominator;
+
+                if (includeEndPoints)
+                {
+                    const float zero = 0f - epsilon;
+                    const float one = 1f + epsilon;
+
+                    if (u_a >= zero && u_a <= one && u_b >= zero && u_b <= one)
+                    {
+                        isIntersecting = true;
+                    }
+                }
+                else
+                {
+                    const float zero = 0f + epsilon;
+                    const float one = 1f - epsilon;
+
+                    if (u_a > zero && u_a < one && u_b > zero && u_b < one)
+                    {
+                        isIntersecting = true;
+                    }
+                }
+            }
+            return isIntersecting;
+        }
+
+        public static bool IsPlaneIntersectEdge(Plane2f plane, Segment2f line)
+        {
+            const float epsilon = MathUtil.ZeroTolerance;
+            bool areIntersecting = false;
+            Vector2 lineDir = Vector2.Normalize(line.P0 - line.P1);
+            float denominator = Vector2.Dot(-plane.normal, lineDir);
+
+            if (denominator > epsilon || denominator < -epsilon)
+            {
+                Vector2 vecBetween = plane.V0 - line.P0;
+                float t = Vector2.Dot(vecBetween, -plane.normal) / denominator;
+                Vector2 intersectionPoint = line.P0 + (lineDir * t);
+
+                if (GeometricTools.Is_P_InbetweenAB(intersectionPoint, line.P0, line.P1))
+                {
+                    areIntersecting = true;
+                }
+            }
+
+            return areIntersecting;
+        }
+
+        /// <summary>
+        /// http://www.scratchapixel.com/lessons/3d-basic-rendering/minimal-ray-tracer-rendering-simple-shapes/ray-plane-and-ray-disk-intersection
+        /// </summary>
+        /// <param name="plane"></param>
+        /// <param name="ray"></param>
+        /// <returns></returns>
+        public static bool IsPlaneIntersectRay(Plane2f plane, Ray2f ray)
+        {
+            const float epsilon = MathUtil.ZeroTolerance;
+            bool areIntersecting = false;
+            float denominator = Vector2.Dot(plane.normal * -1f, ray.direction);
+
+            if (denominator > epsilon)
+            {
+                Vector2 vecBetween = plane.V0 - ray.origin;
+                float t = Vector2.Dot(vecBetween, plane.normal * -1f) / denominator;
+                if (t >= 0f)
+                {
+                    areIntersecting = true;
+                }
+            }
+            return areIntersecting;
+        }
+
+        public static bool IsPlaneIntersectPlane(Plane2f plane_1, Plane2f plane_2)
+        {
+            bool areIntersecting = false;
+            float dot = Vector2.Dot(plane_1.normal, plane_2.normal);
+            const float one = 1f - MathUtil.ZeroTolerance;
+
+            if (dot < one && dot > -one)
+            {
+                areIntersecting = true;
+            }
+            return areIntersecting;
+        }
+
+        public static bool IsSegIntersectSeg(Segment2f a, Segment2f b, bool includeEndPoints, float epsilon = MathUtil.ZeroTolerance)
+        {
+            bool isIntersecting = false;
+            float denominator = ((b.P1.Y - b.P0.Y) * (a.P1.X - a.P0.X)) - ((b.P1.X - b.P0.X) * (a.P1.Y - a.P0.Y));
+
+            // 분모가 0인지 확인, 0 이면 parallel
+            if (Math.Abs(denominator) > epsilon)
+            {   // 평행하지 않음, 교차 가능
+                float u_a = (((b.P1.X - b.P0.X) * (a.P0.Y - b.P0.Y)) - ((b.P1.Y - b.P0.Y) * (a.P0.X - b.P0.X))) / denominator;
+                float u_b = (((a.P1.X - a.P0.X) * (a.P0.Y - b.P0.Y)) - ((a.P1.Y - a.P0.Y) * (a.P0.X - b.P0.X))) / denominator;
+
+                // 양 끝 점이 같으면 교차
+                if (includeEndPoints)
+                {
+                    float zero = 0f - epsilon;
+                    float one = 1f + epsilon;
+
+                    if (u_a >= zero && u_a <= one && u_b >= zero && u_b <= one)
+                    {  // u_a, u_b가 [0, 1] 이거나 0 or 1 이면
+                        isIntersecting = true;
+                    }
+                }
+                else
+                {
+                    float zero = 0f + epsilon;
+                    float one = 1f - epsilon;
+
+                    if (u_a > zero && u_a < one && u_b > zero && u_b < one)
+                    {  // u_a, u_b가 [0, 1]
+                        isIntersecting = true;
+                    }
+                }
+            }
+            else
+            { // 평행
+                isIntersecting = false;
+            }
+            return isIntersecting;
+        }
+
+        /// <summary>
+        /// triangle 간 교차 검토
+        /// </summary>
+        /// <param name="t1"></param>
+        /// <param name="t2"></param>
+        /// <param name="do_AABB_test"></param>
+        /// <returns></returns>
+        public static bool IsTriIntersectTri(Triangle2 t1, Triangle2 t2, bool do_AABB_test)
+        {
+            bool isIntersecting = false;
+
+            //Step 0. AssemblyAABB intersection
+            if (do_AABB_test)
+            {
+                AABB2 r1 = new(t1.MinX(), t1.MaxX(), t1.MinY(), t1.MaxY());//Rectangle3 ( t1 )
+                AABB2 r2 = new(t2.MinX(), t2.MaxX(), t2.MinY(), t2.MaxY());//Rectangle3 ( t2 )
+                if (!IsAABBIntersectAABB(r1, r2))
+                {
+                    return false;
+                }
+            }
+
+            //Step 1. Dimension1-line instersection
+            Segment2f t1_e1 = new(t1.A, t1.B);
+            Segment2f t1_e2 = new(t1.B, t1.C);
+            Segment2f t1_e3 = new(t1.C, t1.A);
+            Segment2f t2_e1 = new(t2.A, t2.B);
+            Segment2f t2_e2 = new(t2.B, t2.C);
+            Segment2f t2_e3 = new(t2.C, t2.A);
+
+            // t1의 edge1 과 t2의 모든 hedge
+            if (IsSegIntersectSeg(t1_e1, t2_e1, true) || IsSegIntersectSeg(t1_e1, t2_e2, true) || IsSegIntersectSeg(t1_e1, t2_e3, true))
+            {
+                isIntersecting = true;
+            }
+            // t1의 edge2 와 t2의 모든 hedge
+            else if (IsSegIntersectSeg(t1_e2, t2_e1, true) || IsSegIntersectSeg(t1_e2, t2_e2, true) || IsSegIntersectSeg(t1_e2, t2_e3, true))
+            {
+                isIntersecting = true;
+            }
+            // t1의 edge3 와 t2의 모든 hedge
+            else if (IsSegIntersectSeg(t1_e3, t2_e1, true) || IsSegIntersectSeg(t1_e3, t2_e2, true) || IsSegIntersectSeg(t1_e3, t2_e3, true))
+            {
+                isIntersecting = true;
+            }
+
+            if (isIntersecting)
+            {
+                return isIntersecting;
+            }
+
+            // Step 2. Dimension0-in-triangle
+            if (IsPointInsideTriangle(t1.B, t2, true) || IsPointInsideTriangle(t2.B, t1, true))
+            {
+                isIntersecting = true;
+            }
+            return isIntersecting;
+        }
+
+        public static Located IsPointInsideCircle(Vector2 a, Vector2 b, Vector2 c, Vector2 testPoint)
+        {
+            Vector2 circleCenter = GeometricTools.Circumcenter(a, b, c);
+            float radiusSqr = a.DistanceSquared(circleCenter);
+            float distPointCenterSqr = testPoint.DistanceSquared(circleCenter);
+            if (distPointCenterSqr < radiusSqr - (MathUtil.ZeroTolerance * 2f))
+            {
+                return Located.IsInside;
+            }
+            else
+            {
+                return distPointCenterSqr > radiusSqr + (MathUtil.ZeroTolerance * 2f) ? Located.NoIntersection : Located.IsOnEdge;
+            }
+        }
+
+        public static bool IsPointInsidePolygon(List<Vector2> polygonPoints, Vector2 point)
+        {
+            Vector2 maxXPosVertex = polygonPoints[0];
+
+            for (int i = 1; i < polygonPoints.Count; i++)
+            {
+                if (polygonPoints[i].X > maxXPosVertex.X)
+                {
+                    maxXPosVertex = polygonPoints[i];
+                }
+            }
+            Vector2 pointOutside = maxXPosVertex + new Vector2(1f, 0.01f);
+            Vector2 l1_p1 = point;
+            Vector2 l1_p2 = pointOutside;
+
+            int numberOfIntersections = 0;
+
+            for (int i = 0; i < polygonPoints.Count; i++)
+            {
+                Vector2 l2_p1 = polygonPoints[i];
+                int iPlusOne = MathUtil.ClampListIndex(i + 1, polygonPoints.Count);
+                Vector2 l2_p2 = polygonPoints[iPlusOne];
+
+                if (IsEdgeIntersectEdge(new Segment2f(l1_p1, l1_p2), new Segment2f(l2_p1, l2_p2), includeEndPoints: true))
+                {
+                    numberOfIntersections += 1;
+                }
+            }
+            bool isInside = true;
+            if (numberOfIntersections == 0 || numberOfIntersections % 2 == 0)
+            {
+                isInside = false;
+            }
+            return isInside;
+        }
+
+        /// <summary>
+        /// point가 삼각형 내부인지 검토
+        ///  http://totologic.blogspot.se/2014/01/accurate-point-in-triangle-test.html
+        /// </summary>
+        /// <param name="p"></param>
+        /// <param name="t"></param>
+        /// <param name="includeBorder"></param>
+        /// <returns></returns>
+        public static bool IsPointInsideTriangle(Vector2 p, Triangle2 t, bool includeBorder)
+        {
+            const float Tolerance = MathUtil.Epsilon;
+
+            float denominator = ((t.B.Y - t.C.Y) * (t.A.X - t.C.X)) + ((t.C.X - t.B.X) * (t.A.Y - t.C.Y));
+
+            float a = (((t.B.Y - t.C.Y) * (p.X - t.C.X)) + ((t.C.X - t.B.X) * (p.Y - t.C.Y))) / denominator;
+            float b = (((t.C.Y - t.A.Y) * (p.X - t.C.X)) + ((t.A.X - t.C.X) * (p.Y - t.C.Y))) / denominator;
+            float c = 1 - a - b;
+
+            bool isWithinTriangle = false;
+
+            if (includeBorder)
+            {
+                const float zero = 0f - Tolerance;
+                const float one = 1f + Tolerance;
+
+                if (a >= zero && a <= one && b >= zero && b <= one && c >= zero && c <= one)
+                {
+                    isWithinTriangle = true;
+                }
+            }
+            else
+            {
+                const float zero = 0f + Tolerance;
+                const float one = 1f - Tolerance;
+
+                if (a > zero && a < one && b > zero && b < one && c > zero && c < one)
+                {
+                    isWithinTriangle = true;
+                }
+            }
+            return isWithinTriangle;
+        }
+
+        public static bool IsPointInsideTriangle(Vector3 p, Triangle3f t, bool includeBorder)
+        {
+            const float Tolerance = MathUtil.Epsilon;
+
+            float denominator = ((t.V1.Z - t.V2.Z) * (t.V0.X - t.V2.X)) + ((t.V2.X - t.V1.X) * (t.V0.Z - t.V2.Z));
+
+            float a = (((t.V1.Z - t.V2.Z) * (p.X - t.V2.X)) + ((t.V2.X - t.V1.X) * (p.Z - t.V2.Z))) / denominator;
+            float b = (((t.V2.Z - t.V0.Z) * (p.X - t.V2.X)) + ((t.V0.X - t.V2.X) * (p.Z - t.V2.Z))) / denominator;
+            float c = 1 - a - b;
+
+            bool isWithinTriangle = false;
+
+            if (includeBorder)
+            {
+                const float zero = 0f - Tolerance;
+                const float one = 1f + Tolerance;
+
+                if (a >= zero && a <= one && b >= zero && b <= one && c >= zero && c <= one)
+                {
+                    isWithinTriangle = true;
+                }
+            }
+            else
+            {
+                const float zero = 0f + Tolerance;
+                const float one = 1f - Tolerance;
+
+                if (a > zero && a < one && b > zero && b < one && c > zero && c < one)
+                {
+                    isWithinTriangle = true;
+                }
+            }
+            return isWithinTriangle;
+        }
+
+        public static bool IsSegmentIntersectBox(Segment3f segment, OOBB3 box)
+        {
+            IntersectSeg3OOBB3 sbQuery = new(segment, box, true);
+            return sbQuery.Test();
+        }
+
+        /// <summary>
+        /// 삼각형 t1이 삼각형 t2내부에 있는지 검토
+        /// </summary>
+        /// <param name="t1"></param>
+        /// <param name="t2"></param>
+        /// <returns></returns>
+        public static bool IsTriangleInsideTriangle(Triangle2 t1, Triangle2 t2)
+        {
+            bool isWithin = false;
+
+            if (
+                IsPointInsideTriangle(t1.A, t2, false) &&
+                IsPointInsideTriangle(t1.B, t2, false) &&
+                IsPointInsideTriangle(t1.C, t2, false))
+            {
+                isWithin = true;
+            }
+
+            return isWithin;
+        }
+
+        public static void ClipConvexPolygonAgainstLine(Vector2 N, float c, ref int quantity, ref Vector2[] V)
+        {
+            int positive = 0, negative = 0, pIndex = -1;
+            float[] test = new float[6];
+            int i;
+            for (i = 0; i < quantity; ++i)
+            {
+                test[i] = Vector2.Dot(N, V[i]) - c;
+                if (test[i] > 0f)
+                {
+                    positive++;
+                    if (pIndex < 0)
+                    {
+                        pIndex = i;
+                    }
+                }
+                else if (test[i] < 0f)
+                {
+                    negative++;
+                }
+            }
+
+            if (positive > 0)
+            {
+                if (negative > 0)
+                {
+                    // Dimension1 transversely intersects polygon.
+                    Vector2[] CV = new Vector2[6];
+                    int cQuantity = 0, cur, prv;
+                    float t;
+
+                    if (pIndex > 0)
+                    {
+                        // First clip vertex on line.
+                        cur = pIndex;
+                        prv = cur - 1;
+                        t = test[cur] / (test[cur] - test[prv]);
+                        CV[cQuantity++] = V[cur] + (t * (V[prv] - V[cur]));
+
+                        // uniqpos on positive side of line.
+                        while (cur < quantity && test[cur] > (double)0)
+                        {
+                            CV[cQuantity++] = V[cur++];
+                        }
+
+                        // Last clip vertex on line.
+                        if (cur < quantity)
+                        {
+                            prv = cur - 1;
+                        }
+                        else
+                        {
+                            cur = 0;
+                            prv = quantity - 1;
+                        }
+                        t = test[cur] / (test[cur] - test[prv]);
+                        CV[cQuantity++] = V[cur] + (t * (V[prv] - V[cur]));
+                    }
+                    else  // pIndex is 0
+                    {
+                        // uniqpos on positive side of line.
+                        cur = 0;
+                        while (cur < quantity && test[cur] > (double)0)
+                        {
+                            CV[cQuantity++] = V[cur++];
+                        }
+
+                        // Last clip vertex on line.
+                        prv = cur - 1;
+                        t = test[cur] / (test[cur] - test[prv]);
+                        CV[cQuantity++] = V[cur] + (t * (V[prv] - V[cur]));
+
+                        // Skip uniqpos on negative side.
+                        while (cur < quantity && test[cur] <= (double)0)
+                        {
+                            ++cur;
+                        }
+
+                        // First clip vertex on line.
+                        if (cur < quantity)
+                        {
+                            prv = cur - 1;
+                            t = test[cur] / (test[cur] - test[prv]);
+                            CV[cQuantity++] = V[cur] + (t * (V[prv] - V[cur]));
+
+                            // uniqpos on positive side of line.
+                            while (cur < quantity && test[cur] > (double)0)
+                            {
+                                CV[cQuantity++] = V[cur++];
+                            }
+                        }
+                        else
+                        {
+                            // cur = 0
+                            prv = quantity - 1;
+                            t = test[0] / (test[0] - test[prv]);
+                            CV[cQuantity++] = V[0] + (t * (V[prv] - V[0]));
+                        }
+                    }
+
+                    quantity = cQuantity;
+                    Array.Copy(CV, V, cQuantity);
+                }
+                // else polygon fully on positive side of line, nothing to do.
+            }
+            else
+            {
+                // Polygon does not intersect positive side of line, clip all.
+                quantity = 0;
+            }
+        }
+
+        public static List<Segment2f> ClipSegmentWithPolygon(Segment2f seg, Polygon2 poly, float eps)
+        {
+            SegmentPolygon(seg, poly, out List<Segment2f> segs, eps);// 0f);
+            return segs;
+        }
+
+        public static IntersectionResult2 ClipPolygonByHS(HalfSpace2 halfspace, List<Vector2> polygon)
+        {
+            IntersectionResult2 result = new();
+            int nV = polygon.Count;
+            List<float> distance = new(nV);
+            int positive = 0, negative = 0, positiveIndex = -1;
+
+            for (int i = 0; i < nV; ++i)
+            {
+                distance[i] = Vector2.Dot(halfspace.normal, polygon[i]) - halfspace.constant;
+                if (distance[i] > 0f)
+                {
+                    ++positive;
+                    if (positiveIndex == -1)
+                    {
+                        positiveIndex = i;
+                    }
+                }
+                else if (distance[i] < 0f)
+                {
+                    ++negative;
+                }
+            }
+            if (positive == 0)
+            {
+                // halfspace 밖에 존재. 교점 없음
+                result.type = IntersectionType.EMPTY;
+                return result;
+            }
+            if (negative == 0)
+            {
+                // 폴리곤이 halfspace 내부에 존재.
+                // 폴리곤 전체 clipping
+                result.type = IntersectionType.POLYGON;
+                return result;
+            }
+            // space를 구분하는 halfspace가 polygon과 교차
+            Vector2 vertex;
+            int curr, prev;
+            float t;
+            result.points = new List<Vector2>();
+
+            if (positiveIndex > 0)
+            {
+                // 교점 계산 시작점
+                curr = positiveIndex;
+                prev = curr - 1;
+                t = distance[curr] / (distance[curr] - distance[prev]);
+                vertex = polygon[curr] + (t * (polygon[prev] - polygon[curr]));
+                result.points.Add(vertex);
+
+                // line의 positive에 위치하는 uniqpos 추가.
+                while (curr < nV && distance[curr] > 0f)
+                {
+                    result.points.Add(polygon[curr++]);
+                }
+
+                if (curr < nV)
+                {
+                    prev = curr - 1;
+                }
+                else
+                {
+                    curr = 0;
+                    prev = nV - 1;
+                }
+                t = distance[curr] / (distance[curr] - distance[prev]);
+                vertex = polygon[curr] + (t * (polygon[prev] - polygon[curr]));
+                result.points.Add(vertex);
+            }
+            else  // positiveIndex is 0
+            {
+                // line의 positive side에 vertex가 포함됨.
+                curr = 0;
+                while (curr < nV && distance[curr] > 0f)
+                {
+                    result.points.Add(polygon[curr++]);
+                }
+
+                // line위의 last clip vertex 계산
+                prev = curr - 1;
+                t = distance[curr] / (distance[curr] - distance[prev]);
+                vertex = polygon[curr] + (t * (polygon[prev] - polygon[curr]));
+                result.points.Add(vertex);
+
+                // line의 negative side vertex skip.
+                while (curr < nV && distance[curr] <= 0f)
+                {
+                    curr++;
+                }
+
+                // line위의 first clip vertex 계산
+                if (curr < nV)
+                {
+                    prev = curr - 1;
+                    t = distance[curr] / (distance[curr] - distance[prev]);
+                    vertex = polygon[curr] + (t * (polygon[prev] - polygon[curr]));
+                    result.points.Add(vertex);
+
+                    // line의 positive side vertex keep.
+                    while (curr < nV && distance[curr] > 0f)
+                    {
+                        result.points.Add(polygon[curr++]);
+                    }
+                }
+                else
+                {
+                    curr = 0;
+                    prev = nV - 1;
+                    t = distance[curr] / (distance[curr] - distance[prev]);
+                    vertex = polygon[curr] + (t * (polygon[prev] - polygon[curr]));
+                    result.points.Add(vertex);
+                }
+            }
+            result.status = IntersectionResult.INTERSECT;
+            return result;
+        }
+
+        /// <summary>
+        /// 교차점 찾기, lines p0ID --> p1ID and q1 --> q3.
+        /// </summary>
+        /// <param name="p1"></param>
+        /// <param name="p2"></param>
+        /// <param name="p3"></param>
+        /// <param name="p4"></param>
+        /// <param name="bLine">line 교차 여부</param>
+        /// <param name="bSeg">default_nsegs 교차 여부</param>
+        /// <param name="intersection">교차 점</param>
+        /// <param name="close_p1"></param>
+        /// <param name="close_p2"></param>
+        /// <param name="t1"></param>
+        /// <param name="t2"></param>
+        public static void FindIntersection(Vector2 p1, Vector2 p2, Vector2 p3, Vector2 p4,
+            out bool bLine, out bool bSeg,
+            out Vector2 intersection, out Vector2 close_p1, out Vector2 close_p2,
+            out float t1, out float t2)
+        {
+            // delta value
+            float dx12 = p2.X - p1.X;
+            float dy12 = p2.Y - p1.Y;
+            float dx34 = p4.X - p3.X;
+            float dy34 = p4.Y - p3.Y;
+
+            // t1 and t2
+            float denominator = (dy12 * dx34) - (dx12 * dy34);
+            t1 = (((p1.X - p3.X) * dy34) + ((p3.Y - p1.Y) * dx34)) / denominator;
+
+            if (float.IsInfinity(t1))
+            {
+                bLine = false;
+                bSeg = false;
+                intersection = new Vector2(float.NaN, float.NaN);
+                close_p1 = new Vector2(float.NaN, float.NaN);
+                close_p2 = new Vector2(float.NaN, float.NaN);
+                t2 = float.PositiveInfinity;
+                return;
+            }
+
+            bLine = true;
+            t2 = (((p3.X - p1.X) * dy12) + ((p1.Y - p3.Y) * dx12)) / -denominator;
+
+            // intersection point 계산
+            intersection = new Vector2(p1.X + (dx12 * t1), p1.Y + (dy12 * t1));
+
+            // t1 and t2 가 [0 ~ 1] 이면 교차
+            bSeg = t1 >= 0 && t1 <= 1 && t2 >= 0 && t2 <= 1;
+
+            // 가장 가까운 점 찾기
+            if (t1 < 0f)
+            {
+                t1 = 0f;
+            }
+            else if (t1 > 1f)
+            {
+                t1 = 1f;
+            }
+
+            if (t2 < 0f)
+            {
+                t2 = 0f;
+            }
+            else if (t2 > 1f)
+            {
+                t2 = 1f;
+            }
+
+            close_p1 = new Vector2(p1.X + (dx12 * t1), p1.Y + (dy12 * t1));
+            close_p2 = new Vector2(p3.X + (dx34 * t2), p3.Y + (dy34 * t2));
+        }
+
+        private static Segment3f To3D(Plane3f plane, Segment2f s, int ig)
+        {
+            float x0 = 0;
+            float y0 = 0;
+            float z0 = 0;
+            float x1 = 0;
+            float y1 = 0;
+            float z1 = 0;
+
+            float inv = 1 / plane.normal[ig];
+
+            switch (ig)
+            {
+                case 0:
+                    y0 = s.P0.X;
+                    z0 = s.P0.Y;
+                    x0 = inv * (plane.constant - (plane.normal.Y * y0) - (plane.normal.Z * z0));
+                    y1 = s.P1.X;
+                    z1 = s.P1.Y;
+                    x1 = inv * (plane.constant - (plane.normal.Y * y1) - (plane.normal.Z * z1));
+                    break;
+                case 1:
+                    z0 = s.P0.X;
+                    x0 = s.P0.Y;
+                    y0 = inv * (plane.constant - (plane.normal.Z * z0) - (plane.normal.X * x0));
+                    z1 = s.P1.X;
+                    x1 = s.P1.Y;
+                    y1 = inv * (plane.constant - (plane.normal.Z * z1) - (plane.normal.X * x1));
+                    break;
+                case 2:
+                    x0 = s.P0.X;
+                    y0 = s.P0.Y;
+                    z0 = inv * (plane.constant - (plane.normal.X * x0) - (plane.normal.Y * y0));
+                    x1 = s.P1.X;
+                    y1 = s.P1.Y;
+                    z1 = inv * (plane.constant - (plane.normal.X * x1) - (plane.normal.Y * y1));
+                    break;
+            }
+
+            return new Segment3f(new Vector3(x0, y0, z0), new Vector3(x1, y1, z1));
+        }
+
+        private static int WhichSide(Triangle2 V, Vector2 P, Vector2 D)
+        {
+            int positive = 0, negative = 0;
+            for (int i = 0; i < 3; ++i)
+            {
+                float t = Vector2.Dot(D, V[i] - P);
+                if (t > 0f)
+                {
+                    ++positive;
+                }
+                else if (t < 0f)
+                {
+                    --negative;
+                }
+
+                if (positive > 0 && negative > 0)
+                {
+                    return 0;
+                }
+            }
+
+            return positive > 0 ? +1 : -1;
+        }
+
+        private static bool Separated(Triangle2 triangle0, Triangle2 triangle1)
+        {
+            for (int i0 = 2, i1 = 0; i1 < 3; i0 = i1++)
+            {
+                Vector2 P = triangle0[i0];
+                Vector2 D = (triangle0[i1] - triangle0[i0]).Perp();
+                if (WhichSide(triangle1, P, D) > 0)
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        /// <summary>
+        /// Plane vs Triangle의 인터섹션을 새로 정의
+        /// 20240926 hschoi
+        /// </summary>
+        /// <param name="plane"></param>
+        /// <param name="triangle"></param>
+        /// <param name="result"></param>
+        /// <returns></returns>
+        public static IntersectionType PlaneTriangleA(Plane3f plane, Triangle3f triangle, out IntersectionResult3 result)
+        {
+            result = new IntersectionResult3();
+            result.points = new List<Vector3>();
+
+            result.quantity = 0;
+            result.status = IntersectionResult.NOTINTERSECT;
+            result.type = IntersectionType.EMPTY;
+
+            Vector3 p0 = triangle[0];
+            Vector3 p1 = triangle[1];
+            Vector3 p2 = triangle[2];
+
+            //평행조건을 판단해 보자
+            float dotNN = plane.normal.Dot(triangle.Normal);
+            float constDD = plane.constant - triangle.Plane.constant;
+            if (1 - Math.Abs(dotNN) < 0.01 && Math.Abs(constDD) < 1.0f)
+            {
+                result.type = IntersectionType.PLANE;
+                result.points.Add(triangle[0]);
+                result.points.Add(triangle[1]);
+                result.points.Add(triangle[2]);
+
+                result.quantity = result.points.Count;
+                result.status = IntersectionResult.INTERSECT;
+
+                return result.type;
+            }
+
+            Vector3? intersect1 = LinePlaneIntersection(p0, p1, plane);
+            Vector3? intersect2 = LinePlaneIntersection(p1, p2, plane);
+            Vector3? intersect3 = LinePlaneIntersection(p2, p0, plane);
+
+            if (intersect1.HasValue)
+            {
+                result.points.Add(intersect1.Value);
+            }
+
+            if (intersect2.HasValue)
+            {
+                result.points.Add(intersect2.Value);
+            }
+
+            if (intersect3.HasValue)
+            {
+                result.points.Add(intersect3.Value);
+            }
+
+            result.quantity = result.points.Count;
+            if (result.quantity == 2)
+            {
+                result.type = IntersectionType.SEGMENT; result.status = IntersectionResult.INTERSECT;
+            }
+            else
+            {
+                result.type = IntersectionType.EMPTY; result.status = IntersectionResult.NOTINTERSECT;
+            }
+
+            return result.type;
+        }
+
+        public static Vector3? LinePlaneIntersection(Vector3 p0, Vector3 p1, Plane3f plane)
+        {
+            Vector3 lineDirection = p1 - p0;
+            float dotProduct = Vector3.Dot(plane.normal, lineDirection);
+
+            // 선분이 평면과 평행하면 교차점이 없음
+            if (Math.Abs(dotProduct) < 1e-6)
+            {
+                return null;
+            }
+
+            // 교차점 t 계산
+            float t = -(Vector3.Dot(plane.normal, p0) - plane.constant) / dotProduct;
+
+            // t가 [0, 1] 범위 안에 있어야 교차점이 선분 위에 존재
+            if (t < 0 || t > 1)
+            {
+                return null;
+            }
+
+            return p0 + (t * lineDirection); // 교차점 좌표 반환
+        }
+    }
+}

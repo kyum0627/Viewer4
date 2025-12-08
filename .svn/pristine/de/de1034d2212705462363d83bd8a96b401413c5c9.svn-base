@@ -1,0 +1,103 @@
+﻿using IGX.Geometry.Common;
+using IGX.Geometry.ConvexHull;
+using IGX.ViewControl.Render.Materials;
+using OpenTK.Graphics.OpenGL4;
+using OpenTK.Windowing.GraphicsLibraryFramework;
+
+namespace IGX.ViewControl.Render.ClipPlane
+{
+    /// <summary>
+    /// Represents the different modes of clipping.
+    /// </summary>
+    public enum ClipMode
+    {
+        None = 0,
+        SinglePlane = 1,
+        Box = 2,
+        Section = 3
+    }
+
+    public class ClipPlaneSystem : IDisposable
+    {
+        public ClipMode Mode { get; set; } = ClipMode.Box;
+        public bool Enabled { get; set; } = true;
+        public bool ShowBox { get; set; } = true;
+
+        public readonly ClippingBox ClipBoxData;
+        private readonly ClipBoxGizmoRenderer _gizmoRenderer;
+        private readonly ClipBoxController _controller;
+
+        public static string ClippingShaderHeader = @"
+            uniform int u_ClipMode;
+            uniform vec4 u_ClipPlanes[6];
+            bool IsClipped(vec3 worldPos)
+            {
+                if (u_ClipMode == 0) return false;
+                if (u_ClipMode == 1)
+                {
+                    return dot(vec4(worldPos, 1.0), u_ClipPlanes[0]) < 0.0;
+                }
+                if (u_ClipMode == 2)
+                {
+                    for (int i = 0; i < 6; i++)
+                    {
+                        if (dot(vec4(worldPos, 1.0), u_ClipPlanes[i]) < 0.0)
+                            return true;
+                    }
+                }
+                return false;
+            }
+        ";
+
+        public ClipPlaneSystem(IMyCamera camera)
+        {
+            ClipBoxData = new ClippingBox();
+            _gizmoRenderer = new ClipBoxGizmoRenderer(ClipBoxData);
+            _controller = new ClipBoxController(camera, ClipBoxData, _gizmoRenderer);
+        }
+
+        public void Update(MouseState mouse)
+        {
+            if (Enabled && Mode == ClipMode.Box)
+            {
+                _controller.HandleInput(mouse);
+            }
+        }
+
+        public void Draw(IMyCamera camera)
+        {
+            if (Enabled && ShowBox && Mode == ClipMode.Box)
+            {
+                _gizmoRenderer.Draw(camera);
+            }
+        }
+
+        public void ApplyToShader(int shaderHandle)
+        {
+            if (!Enabled)
+            {
+                return;
+            }
+
+            int modeLoc = GL.GetUniformLocation(shaderHandle, "u_ClipMode");
+            int planeLoc = GL.GetUniformLocation(shaderHandle, "u_ClipPlanes");
+
+            GL.Uniform1(modeLoc, (int)Mode);
+            if (Mode != ClipMode.None)
+            {
+                GL.Uniform4(planeLoc, ClipBoxData.ClipPlanes.Length, ref ClipBoxData.ClipPlanes[0].X);
+            }
+        }
+
+        public void ResetBox(AABB3 box)
+        {
+            ClipBoxData.ResetBox(box);
+            _gizmoRenderer.NotifyUpdateNeeded();
+        }
+
+        public void Dispose()
+        {
+            _gizmoRenderer.Dispose();
+        }
+    }
+}

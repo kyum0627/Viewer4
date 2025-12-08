@@ -1,0 +1,58 @@
+﻿using IGX.Geometry.DataStructure;
+using IGX.ViewControl.Render;
+using OpenTK.Graphics.OpenGL4;
+using OpenTK.Mathematics;
+
+namespace IGX.ViewControl
+{
+    public class ModelRendererManager
+    {
+        private readonly ModelManager _modelManager;
+        private Dictionary<string, Shader> _shaderManager = new Dictionary<string, Shader>();
+        public ModelRendererManager(ModelManager modelManager)
+        {
+            _modelManager = modelManager ?? throw new ArgumentNullException(nameof(modelManager), "ModelManager는 null일 수 없습니다.");
+        }
+
+        public void RenderAllModels(Shader shaderToUse)
+        {
+            if (shaderToUse == null)
+            {
+                throw new ArgumentNullException(nameof(shaderToUse), "렌더링에 사용할 Shader 객체는 null일 수 없습니다.");
+            }
+
+            using (shaderToUse.Use())
+            {
+                DrawAllType(_modelManager.ModelRender);
+            }
+        }
+
+        public void RenderModel(int modelId, Shader shaderToUse)
+        {
+            if (shaderToUse == null)
+            {
+                throw new ArgumentNullException(nameof(shaderToUse), "렌더링에 사용할 Shader 객체는 null일 수 없습니다.");
+            }
+            if (modelId < 0 || modelId >= _modelManager.ModelRender.Count || _modelManager.ModelRender[modelId] == null)
+            {
+                throw new ArgumentOutOfRangeException(nameof(modelId), "모델 ID가 유효한 범위를 벗어났거나 해당 버퍼가 존재하지 않습니다.");
+            }
+
+            using (shaderToUse.Use())
+            {
+                DrawAllType(new List<DrawElementsIndirect<Vertex, uint, MeshInstanceGL>> { _modelManager.ModelRender[modelId] });
+            }
+        }
+
+        private void DrawAllType(IEnumerable<DrawElementsIndirect<Vertex, uint, MeshInstanceGL>> bufferManagers)
+        {
+            foreach (var bufferManager in bufferManagers)
+            {
+                if (bufferManager != null)
+                {
+                    bufferManager.DrawMulti(PrimitiveType.Triangles); // 한번에 그리기
+                }
+            }
+        }
+    }
+}

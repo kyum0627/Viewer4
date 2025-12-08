@@ -1,0 +1,338 @@
+﻿using System;
+using OpenTK.Mathematics;
+
+namespace IGX.Geometry.Common
+{
+    /// <summary>
+    /// 무한 평면 정의, 생성, 점과 면의 거리, 점의 위치 등...
+    /// </summary>
+    public struct Plane3f : IComparable<Plane3f>, IEquatable<Plane3f>
+    {
+        public Vector3 normal;
+        public float constant; // 좌표 원점에서 평면까지 거리
+
+        static public readonly Plane3f Empty = new(Vector3.Zero, 0);
+
+        #region Get, Set
+        /// <summary>
+        /// 좌표 원점에서 평면까지 절대 거리
+        /// </summary>
+        public readonly float AbsDistance
+        {
+            get
+            {
+                return constant > 0 ? constant : -constant;
+            }
+        }
+
+        /// <summary>
+        /// 양의 거리를 갖는 plane의 norID vector
+        /// </summary>
+        public readonly Vector3 AbsNormal
+        {
+            get
+            {
+                return constant > 0 ? normal : -normal;
+            }
+        }
+
+        public static Plane3f PlaneXY(Vector3 origin) => new(origin, Vector3.UnitZ);
+        public static Plane3f PlaneYZ(Vector3 origin) => new(origin, Vector3.UnitX);
+        public static Plane3f PlaneZX(Vector3 origin) => new(origin, Vector3.UnitY);
+
+        /// <summary>
+        /// 평면의 원점
+        /// </summary>
+        public readonly Vector3 V0 => normal * constant;
+
+        #endregion
+
+        #region Constructor
+
+        public Plane3f(Plane3f copy)
+        {
+            normal = new Vector3(copy.normal.X, copy.normal.Y, copy.normal.Z);
+            constant = copy.constant;
+        }
+        // Plane 구조체와 유사한 Raycast 메서드 (선택 사항)
+        public readonly bool Raycast(Ray3f ray, out float enter)
+        {
+            float denom = Vector3.Dot(normal, ray.direction);
+            if (denom > 1e-06f || denom < -1e-06f)
+            {
+                Vector3 v = (normal * constant) - ray.origin;
+                enter = Vector3.Dot(v, normal) / denom;
+                return enter >= 0;
+            }
+            enter = 0;
+            return false;
+        }
+        public readonly float[] ToBuffer()
+        {
+            return new float[] { normal.X, normal.Y, normal.Z, constant };
+        }
+
+        /// <summary>
+        /// 원점에서 norID 방향으로 거리 constant 떨어진 평면
+        /// </summary>
+        /// <param name="planeNormal"></param>
+        /// <param name="constant"></param>
+        public Plane3f(Vector3 planeNormal, float constant)
+        {
+            normal = planeNormal;
+            this.constant = constant;
+        }
+
+        public Plane3f(Vector3 planeNormal, Vector3 pointOnPlane)
+        {
+            normal = planeNormal;
+            constant = Vector3.Dot(normal, pointOnPlane);
+        }
+
+        /// <summary>
+        /// 직선위에 놓여있지 않은 세 점 p0ID, p0ID, p2로 정의된 평면
+        /// </summary>
+        /// <param name="p0"></param>
+        /// <param name="p1"></param>
+        /// <param name="p2"></param>
+        public Plane3f(Vector3 p0, Vector3 p1, Vector3 p2)
+        {
+            // http://www.had2know.com/academics/equation-plane-through-3-ControlPoints.html
+            if (p0 == p1 || p0 == p2 || p1 == p2)
+            {
+                normal = Vector3.Zero;
+                //throw new ArgumentException("서로 다른 점이어야 함");
+            }
+
+            Vector3 edge1 = p1 - p0;
+            Vector3 edge2 = p2 - p0;
+
+            normal = edge1.Cross(edge2);
+            normal.Normalize();
+            constant = Vector3.Dot(normal, p0);
+        }
+
+        public static void Clear()
+        {
+        }
+
+        #endregion
+
+        /// <summary>
+        /// 두 무한 A, B의 사이각
+        /// </summary>
+        /// <param name="A"></param>
+        /// <param name="B"></param>
+        /// <returns></returns>
+        public static float AngleDeg(Plane3f A, Plane3f B)
+        {
+            return A.normal.AngleDeg(B.normal);
+        }
+
+        /// <summary>
+        /// this 평면과 평면 B와의 사이각
+        /// </summary>
+        /// <param name="B"></param>
+        /// <returns></returns>
+        public readonly float AngleDeg(Plane3f B)
+        {
+            return normal.AngleDeg(B.normal);
+        }
+
+        /// <summary>
+        /// this 평면과 무한 직선의 사이각
+        /// </summary>
+        /// <param name="B"></param>
+        /// <returns></returns>
+        public readonly float AngleDeg(Line3f B)
+        {
+            return 90 - normal.AngleDeg(B.direction);
+        }
+
+        /// <summary>
+        /// this 평면과 Segment의 사이각
+        /// </summary>
+        /// <param name="B"></param>
+        /// <returns></returns>
+        public readonly float AngleDeg(Segment3f B)
+        {
+            return 90 - normal.AngleDeg(B.direction);
+        }
+
+        /// <summary>
+        /// 평면과 점간의 거리,
+        ///    리턴 값이 양수이면 점은 면의 방향상에 존재
+        ///    리턴 값이 음수이면 점은 면의 반대 방향에 존재
+        ///    0 이면 면 위에 존재
+        /// </summary>
+        /// <param name="p"></param>
+        /// <returns></returns>
+        public readonly float DistanceTo(Vector3 p)
+        {
+            return Vector3.Dot(normal, p) - constant;
+        }
+
+        public readonly double SignedDistanceTo(Vector3 point)
+        {
+            Vector3 p = Project(point);
+            Vector3 v = Vector3.Normalize(point - p);
+            return Vector3.Dot(v, normal);
+        }
+
+        public readonly Vector3 Project(Vector3 p)
+        {
+            // Signed distance from point to plane
+            float distance = Vector3.Dot(normal, p) + constant;
+
+            // Projected point: pID' = pID - distance * normal
+            return p - (distance * normal);
+        }
+        public readonly Line3f Project(Line3f lineToProject)
+        {
+            Vector3 projorigin = Project(lineToProject.origin);
+            Vector3 projdirpoint = Project(lineToProject.origin + (lineToProject.direction * 10000f));
+            return new Line3f(projorigin, projdirpoint);
+        }
+
+        public readonly Segment3f Project(Segment3f seg3ToProject)
+        {
+            Vector3 P0 = Project(seg3ToProject.P0);
+            Vector3 P1 = Project(seg3ToProject.P1);
+            return new Segment3f(P0, P1);
+        }
+
+        public readonly Ray3f Project(Ray3f rayToProject)
+        {
+            Vector3 projectedThroughPoint = Project(rayToProject.origin);
+            Vector3 projectedDirection = Project(rayToProject.origin + (rayToProject.direction * 10000f));
+            return new Ray3f(projectedThroughPoint, projectedDirection);
+        }
+
+        public readonly float DistanceSquared(Vector3 p)
+        {
+            float d = DistanceTo(p);
+            return d * d;
+        }
+
+        public readonly void PointCount(Vector3 p, ref int neg, ref int zero, ref int pos, float eps = MathUtil.Epsilon)
+        {
+            float test = Vector3.Dot(normal, p);// = 0;
+
+            if (test < -eps)
+            {
+                neg++;
+            }
+            else if (test > eps)
+            {
+                pos++;
+            }
+            else
+            {
+                zero++;
+            }
+        }
+
+        /// <summary>
+        /// 주어진 점이 면의 어느 방향에 존재하는지 체크
+        /// </summary>
+        /// <param name="p"></param>
+        /// <returns>
+        ///  1 : 점이 면의 norID 방향에 있으면
+        /// -1 : 점이 면의 norID 반대 방향에 있으면
+        ///  0 : 면 위에 존재
+        /// </returns>
+        public readonly int IsPointOnPlane(Vector3 p, float eps = MathUtil.Epsilon)
+        {
+            float distance = DistanceTo(p);
+
+            return distance < -eps ? -1 : distance > eps ? 1 : 0;
+        }
+
+        #region Operator, Compare
+
+        public static bool operator ==(Plane3f a, Plane3f b)
+        {
+            return a.constant == b.constant && a.normal == b.normal;
+        }
+
+        public static bool operator !=(Plane3f a, Plane3f b)
+        {
+            return a.constant != b.constant || a.normal != b.normal;
+        }
+
+        /// <summary>
+        /// Object type 비교
+        /// </summary>
+        /// <param name="obj"></param>
+        /// <returns></returns>
+        public override readonly bool Equals(object? obj)
+        {
+            if (obj is null)
+            {
+                return false;
+            }
+
+            return obj is Plane3f otherPlane && this == otherPlane;
+        }
+
+        public static bool Equals(Plane3f A, Plane3f B)
+        {
+            return A == B;
+        }
+
+        /// <summary>
+        /// this 평면과 other 평면을 비교
+        /// other의 X, Y, Z 및 distance를 각각 차례로 비교하여 this의 값이 작으면 -1, 같으면 0, 크면 1
+        /// </summary>
+        /// <param name="other"></param>
+        /// <returns>작으면 -1, 같으면 0, 크면 1</returns>
+        public readonly int CompareTo(Plane3f other)
+        {
+            return normal != other.normal ? normal.CompareTo(other.normal) : constant < other.constant ? -1 : constant == other.constant ? 0 : 1;
+        }
+
+        /// <summary>
+        /// this 평면과 other 평면 비교,
+        /// </summary>
+        /// <param name="other"></param>
+        /// <returns>같으면 true 다르면 false</returns>
+        public readonly bool Equals(Plane3f other)
+        {
+            return constant == other.constant && normal == other.normal;
+        }
+
+        ///// <summary>
+        ///// 각 값의 허용오차가 모두 epsilon 범위내에 있으면 같은 놈으로 취급
+        ///// </summary>
+        ///// <param name="B"></param>
+        ///// <param name="epsilon"></param>
+        ///// <returns></returns>
+        //public bool EpsilonEqual(Plane3f B, float epsilon = MathUtil.Epsilon)
+        //{
+        //    float dist = this.norID.Dot(B.V0id) - this.constant;
+        //    float RotationAngles = this.norID.AngleDeg(B.norID);
+        //    Interval intv = new Interval(MathUtil.EpsilonAngle, 180 - MathUtil.EpsilonAngle); // 이 각도 범위에 들어오면 두 면은 평행하지 않음
+        //    return !intv.Contains(RotationAngles) && Math.Abs(dist) < epsilon;
+        //}
+
+        /// <summary>
+        /// object hashing ...
+        /// </summary>
+        /// <returns></returns>
+        public override readonly int GetHashCode()
+        {
+            unchecked // Overflow is fine, just wrap
+            {
+                int hash = (int)2166136261;
+                // Suitable nullity checks etc, of course :)
+                hash = (hash * 16777619) ^ constant.GetHashCode();
+                hash = (hash * 16777619) ^ normal.X.GetHashCode();
+                hash = (hash * 16777619) ^ normal.Y.GetHashCode();
+                hash = (hash * 16777619) ^ normal.Z.GetHashCode();
+                return hash;
+            }
+        }
+
+        #endregion
+    }
+}

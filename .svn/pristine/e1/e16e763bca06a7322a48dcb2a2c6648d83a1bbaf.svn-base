@@ -1,0 +1,238 @@
+﻿using IGX.ViewControl.Buffer;
+using IGX.ViewControl.Render.Materials;
+using OpenTK.Graphics.OpenGL4;
+
+namespace IGX.ViewControl.Render
+{
+    public class MultiDrawElementsIndirect<TVertex, TIndex, TInstance> : IDisposable
+        where TVertex : struct where TIndex : struct where TInstance : struct
+    {
+        public int VAO => _instancedBuffer.VAO;
+        private readonly DrawElementsInstanced<TVertex, TIndex, TInstance> _instancedBuffer;
+        private readonly IndirectBuffer<DrawElementsIndirectCommand> _indirectCommands;
+        private bool _isDisposed = false;
+        public int CommandCount => _indirectCommands.Count;
+        public int InstanceCount => _instancedBuffer.InstanceArrayCount;
+
+        private readonly object _bufferLock = new();
+
+        public MultiDrawElementsIndirect(
+            ReadOnlySpan<TVertex> vertices,
+            ReadOnlySpan<TIndex> indices,
+            ReadOnlySpan<DrawElementsIndirectCommand> commands,
+            ReadOnlySpan<TInstance> instances,
+            BufferUsageHint vertexHint = BufferUsageHint.StaticDraw,
+            BufferUsageHint indexHint = BufferUsageHint.StaticDraw,
+            BufferUsageHint commandHint = BufferUsageHint.StaticDraw,
+            BufferUsageHint instanceHint = BufferUsageHint.DynamicDraw)
+        {
+            if (vertices.IsEmpty) throw new ArgumentException("Vertex data cannot be empty.", nameof(vertices));
+            if (indices.IsEmpty) throw new ArgumentException("Index data cannot be empty.", nameof(indices));
+            if (commands.IsEmpty) throw new ArgumentException("Command data cannot be empty.", nameof(commands));
+            if (instances.IsEmpty) throw new ArgumentException("Instance data cannot be empty.", nameof(instances));
+
+            if (!IsContextLikelyActive())
+            {
+                throw new InvalidOperationException("Cannot create MultiDrawElementsIndirect without an active OpenGL context.");
+            }
+
+            try
+            {
+                _instancedBuffer = new DrawElementsInstanced<TVertex, TIndex, TInstance>(vertices, indices, instances, vertexHint, indexHint, instanceHint);
+                lock (_bufferLock)
+                {
+                    _instancedBuffer.Bind();
+                    _indirectCommands = new IndirectBuffer<DrawElementsIndirectCommand>(commands.ToArray(), commandHint);
+                    _instancedBuffer.Unbind();
+                }
+                CheckGLError();
+            }
+            catch (Exception ex)
+            {
+                _instancedBuffer?.Dispose();
+                throw new InvalidOperationException("Failed to initialize MultiDrawElementsIndirect.", ex);
+            }
+        }
+
+        public void Draw(PrimitiveType type)
+        {
+            if (_isDisposed) throw new ObjectDisposedException(nameof(MultiDrawElementsIndirect<TVertex, TIndex, TInstance>));
+            if (!IsContextLikelyActive())
+            {
+                throw new InvalidOperationException("Cannot draw without an active OpenGL context.");
+            }
+
+            lock (_bufferLock)
+            {
+                _instancedBuffer.Bind();
+                _indirectCommands.Bind();
+                GL.MultiDrawElementsIndirect(
+                    type,
+                    _instancedBuffer.ElementType,
+                    nint.Zero,
+                    CommandCount,
+                    0);
+                CheckGLError();
+                _instancedBuffer.Unbind();
+                _indirectCommands.Unbind();
+            }
+        }
+
+        public void ResizeInstanceBuffer(int newSize)
+        {
+            if (_isDisposed) throw new ObjectDisposedException(nameof(MultiDrawElementsIndirect<TVertex, TIndex, TInstance>));
+            if (newSize < InstanceCount) throw new ArgumentException("New size cannot be smaller than the current instance count.", nameof(newSize));
+            _instancedBuffer.ResizeInstanceBuffer(newSize);
+        }
+
+        public void ResizeCommandBuffer(int newSize)
+        {
+            if (_isDisposed) return;
+            _indirectCommands.Resize(newSize);
+        }
+
+        public void RemoveInstance(int index)
+        {
+            if (_isDisposed || index < 0 || index >= InstanceCount) return;
+
+            var cpuData = _instancedBuffer.GetData();
+            if (cpuData.IsEmpty) return;
+
+            var instanceBuffer = _instancedBuffer.GetType().GetField("_instanceBuffer", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)?.GetValue(_instancedBuffer) as ArrayBuffer<TInstance>;
+            if (instanceBuffer != null)
+            {
+                var instanceCpuData = instanceBuffer.CpuData;
+                for (int i = index; i < instanceCpuData.Length - 1; i++)
+                {
+                    instanceCpuData[i] = instanceCpuData[i + 1];
+                }
+                lock (_bufferLock)
+                {
+                    _instancedBuffer.Bind();
+                    instanceBuffer.Resize(InstanceCount - 1);
+                    _instancedBuffer.Unbind();
+                }
+            }
+        }
+
+        public void AddInstance(TInstance instance)
+        {
+            if (_isDisposed) return;
+
+            lock (_bufferLock)
+            {
+                _instancedBuffer.Bind();
+                _instancedBuffer.ResizeInstanceBuffer(InstanceCount + 1);
+                _instancedBuffer.UpdateSingleInstance(InstanceCount - 1, instance);
+                _instancedBuffer.Unbind();
+            }
+        }
+
+        public void UpdateSingleVertex(int vertexIndex, TVertex newVertexData)
+        {
+            if (_isDisposed) return;
+            _instancedBuffer.UpdateSingleVertex(vertexIndex, newVertexData);
+        }
+
+        public void UpdateVertices(int startIndex, ReadOnlySpan<TVertex> newVertexData)
+        {
+            if (_isDisposed) return;
+            _instancedBuffer.UpdateVertices(startIndex, newVertexData);
+        }
+        public void UpdateVertices(ReadOnlySpan<TVertex> newVertexData)
+        {
+            if (_isDisposed) return;
+            _instancedBuffer.UpdateVertices(0, newVertexData);
+        }
+        public void UpdateIndices(ReadOnlySpan<TIndex> indices)
+        {
+            if (_isDisposed) return;
+            _instancedBuffer.UpdateIndices(0, indices);
+        }
+        public void UpdateInstances(ReadOnlySpan<TInstance> instances)
+        {
+            if (_isDisposed) return;
+            _instancedBuffer.UpdateInstanceData(instances);
+        }
+
+        public void UpdateCommands(ReadOnlySpan<DrawElementsIndirectCommand> commands)
+        {
+            _indirectCommands.UpdateData(commands);
+        }
+
+        public void UpdateSingleInstance(int index, TInstance instance)
+        {
+            if (_isDisposed) return;
+            _instancedBuffer.UpdateSingleInstance(index, instance);
+        }
+
+        public void Bind()
+        {
+            if (_isDisposed) throw new ObjectDisposedException(nameof(MultiDrawElementsIndirect<TVertex, TIndex, TInstance>));
+            if (!IsContextLikelyActive())
+            {
+                throw new InvalidOperationException("Cannot bind buffers without an active OpenGL context.");
+            }
+            lock (_bufferLock)
+            {
+                _instancedBuffer.Bind();
+                _indirectCommands.Bind();
+            }
+        }
+
+        public void Unbind()
+        {
+            lock (_bufferLock)
+            {
+                _instancedBuffer.Unbind();
+                _indirectCommands.Unbind();
+            }
+        }
+
+        protected virtual void Dispose(bool disposing)
+        {
+            if (_isDisposed) return;
+
+            if (disposing)
+            {
+                _instancedBuffer.Dispose();
+                _indirectCommands.Dispose();
+            }
+
+            _isDisposed = true;
+        }
+
+        public void Dispose()
+        {
+            Dispose(true);
+            GC.SuppressFinalize(this);
+        }
+
+        ~MultiDrawElementsIndirect()
+        {
+            Dispose(false);
+        }
+
+        private static bool IsContextLikelyActive()
+        {
+            try
+            {
+                GL.GetError();
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static void CheckGLError()
+        {
+            var error = GL.GetError();
+            if (error != ErrorCode.NoError)
+            {
+                throw new InvalidOperationException($"OpenGL error: {error}");
+            }
+        }
+    }
+}

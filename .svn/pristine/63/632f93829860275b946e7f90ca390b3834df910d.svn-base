@@ -1,0 +1,31 @@
+﻿using IGX.Geometry.Common;
+using IGX.ViewControl.Render;
+using OpenTK.Graphics.OpenGL4;
+using OpenTK.Mathematics;
+namespace IGX.ViewControl
+{
+    //public interface ISceneParameters // 3D 씬 환경 설정.
+    //{
+    //    float PerPixel { get; set; } // 픽셀당 스케일 값.
+    //    AABB3 TotalBoundingBox { get; set; } // 씬의 바운딩 박스.
+    //    Vector4 BackGroundColor { get; set; } // 배경 색상.
+    //    IMyCamera Camera { get; set; } // 렌더링에 사용될 카메라.
+    //    List<Vector4> ClipPlanes { get; set; }
+    //    CoordinateDrawPosition CoordinatePosition { get; set; }
+    //    float VectorSize { get; set; }
+    //    Vector4 VectorColor { get; set; }
+    //    Vector4 BoxColor { get; set; }
+    //}
+    public class SceneParameters// : ISceneParameters
+    {
+        public float PerPixel { get; set; } = 1f;
+        public AABB3 TotalBoundingBox { get; set; } = AABB3.Empty;
+        public Vector4 BackGroundColor { get; set; } = Vector4.One;
+        public IMyCamera Camera { get; set; } = new MyCamera(1, 1);
+        public List<Vector4> ClipPlanes { get; set; } = [];
+        public CoordinateDrawPosition CoordinatePosition { get; set; } = CoordinateDrawPosition.LeftDown;
+        public float VectorSize { get; set; } = 1f;
+        public Vector4 VectorColor { get; set; } = new Vector4(1, 1, 0, 0.7f);
+        public Vector4 BoxColor { get; set; } = new Vector4(0, 0, 1, 1);
+    }
+}

@@ -1,0 +1,144 @@
+﻿using IGX.Geometry.Common;
+using IGX.ViewControl.Render.Materials;
+using OpenTK.Mathematics;
+using OpenTK.Windowing.GraphicsLibraryFramework;
+
+namespace IGX.ViewControl.Render.ClipPlane
+{
+    public class ClipBoxController
+    {
+        private readonly IMyCamera _camera;
+        private readonly ClippingBox _clipBoxData;
+        private readonly ClipBoxGizmoRenderer _gizmoRenderer;
+        private const float GizmoHandleSize = 0.1f;
+
+        private int _selectedHandle = -1;
+        private Vector3 _dragStartPos;
+        private bool _isDragging = false;
+
+        public ClipBoxController(IMyCamera camera, ClippingBox clipBoxData, ClipBoxGizmoRenderer gizmoRenderer)
+        {
+            _camera = camera;
+            _clipBoxData = clipBoxData;
+            _gizmoRenderer = gizmoRenderer;
+        }
+
+        public void HandleInput(MouseState mouse)
+        {
+            Ray3f mouseRay = CalculateRay(mouse.Position);
+
+            if (mouse.IsButtonDown(MouseButton.Left))
+            {
+                if (!_isDragging)
+                {
+                    _selectedHandle = PickGizmo(mouseRay);
+                    if (_selectedHandle != -1)
+                    {
+                        Vector3 handlePos = _clipBoxData.GetHandlePosition(_selectedHandle);
+                        Plane3f dragPlane = new(_camera.Position - _camera.Target, handlePos);
+                        if (mouseRay.IntersectRayPlane(dragPlane, out _dragStartPos))
+                        {
+                            _isDragging = true;
+                        }
+                    }
+                }
+                else
+                {
+                    Plane3f dragPlane = new(_camera.Position - _camera.Target, _dragStartPos);
+                    if (mouseRay.IntersectRayPlane(dragPlane, out Vector3 currentPos))
+                    {
+                        Vector3 delta = currentPos - _dragStartPos;
+                        _clipBoxData.UpdatePlanes(_selectedHandle, delta);
+                        _dragStartPos = currentPos;
+                        _gizmoRenderer.NotifyUpdateNeeded();
+                    }
+                }
+            }
+            else
+            {
+                _isDragging = false;
+                _selectedHandle = -1;
+            }
+        }
+
+        private Ray3f CalculateRay(Vector2 mousePosition)
+        {
+            Vector2 viewportSize = new(_camera.ViewportWidth, _camera.ViewportHeight);
+            var view = _camera.ViewMatrix;
+            var projection = _camera.ProjectionMatrix;
+
+            float x = 2.0f * mousePosition.X / viewportSize.X - 1.0f;
+            float y = 1.0f - 2.0f * mousePosition.Y / viewportSize.Y;
+
+            Vector4 clipCoord = new(x, y, -1.0f, 1.0f);
+
+            Matrix4 invProjection = Matrix4.Invert(projection);
+            Vector4 eyeCoord = invProjection * clipCoord;
+            eyeCoord.Z = -1.0f;
+            eyeCoord.W = 0.0f;
+
+            Matrix4 invView = Matrix4.Invert(view);
+            Vector3 rayDirection = Vector3.TransformVector(eyeCoord.Xyz, invView).Normalized();
+
+            return new Ray3f(_camera.Position, rayDirection);
+        }
+
+        private int PickGizmo(Ray3f ray)
+        {
+            Vector3[] corners = _clipBoxData.GetClipBoxCorners();
+            uint[] indices = [0, 1, 1, 3, 3, 2, 2, 0, 4, 5, 5, 7, 7, 6, 6, 4, 0, 4, 1, 5, 2, 6, 3, 7];
+
+            for (int i = 0; i < corners.Length; i++)
+            {
+                if (ray.IntersectsSphere(corners[i], GizmoHandleSize, out _))
+                {
+                    return 18 + i;
+                }
+            }
+
+            for (int i = 0; i < indices.Length / 2; i++)
+            {
+                Vector3 start = corners[indices[i * 2]];
+                Vector3 end = corners[indices[i * 2 + 1]];
+                float dist = ray.DistanceToLineSegment(new Segment3f(start, end));
+                if (dist < GizmoHandleSize)
+                {
+                    return 6 + i;
+                }
+            }
+
+            for (int i = 0; i < 6; i++)
+            {
+                Plane3f p = new(_clipBoxData.ClipPlanes[i].Xyz, _clipBoxData.ClipPlanes[i].W);
+                if (ray.IntersectRayPlane(p, out Vector3 intersectionPoint))
+                {
+                    if (IsPointOnBoxFace(intersectionPoint, i))
+                    {
+                        return i;
+                    }
+                }
+            }
+            return -1;
+        }
+
+        private bool IsPointOnBoxFace(Vector3 point, int planeIndex)
+        {
+            Vector3[] corners = _clipBoxData.GetClipBoxCorners();
+            Vector3 min = corners.Aggregate(corners[0], Vector3.ComponentMin);
+            Vector3 max = corners.Aggregate(corners[0], Vector3.ComponentMax);
+
+            const float tolerance = 0.01f;
+
+            switch (planeIndex)
+            {
+                case 0: return Math.Abs(point.X - max.X) < tolerance && point.Y >= min.Y - tolerance && point.Y <= max.Y + tolerance && point.Z >= min.Z - tolerance && point.Z <= max.Z + tolerance;
+                case 1: return Math.Abs(point.X - min.X) < tolerance && point.Y >= min.Y - tolerance && point.Y <= max.Y + tolerance && point.Z >= min.Z - tolerance && point.Z <= max.Z + tolerance;
+                case 2: return Math.Abs(point.Y - max.Y) < tolerance && point.X >= min.X - tolerance && point.X <= max.X + tolerance && point.Z >= min.Z - tolerance && point.Z <= max.Z + tolerance;
+                case 3: return Math.Abs(point.Y - min.Y) < tolerance && point.X >= min.X - tolerance && point.X <= max.X + tolerance && point.Z >= min.Z - tolerance && point.Z <= max.Z + tolerance;
+                case 4: return Math.Abs(point.Z - max.Z) < tolerance && point.X >= min.X - tolerance && point.X <= max.X + tolerance && point.Y >= min.Y - tolerance && point.Y <= max.Y + tolerance;
+                case 5: return Math.Abs(point.Z - min.Z) < tolerance && point.X >= min.X - tolerance && point.X <= max.X + tolerance && point.Y >= min.Y - tolerance && point.Y <= max.Y + tolerance;
+            }
+            return false;
+        }
+    }
+}

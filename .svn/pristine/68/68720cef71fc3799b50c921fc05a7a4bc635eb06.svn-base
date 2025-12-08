@@ -1,0 +1,220 @@
+﻿using IGX.ViewControl.Render.Materials;
+using OpenTK.Graphics.OpenGL4;
+using System.Runtime.InteropServices;
+
+namespace IGX.ViewControl.Render
+{
+    public class DrawElementsIndirect<TVertex, TIndex, TInstance> : IDisposable
+        where TVertex : struct where TIndex : struct where TInstance : struct
+    {
+        public int VAO => _indirectCommandBuffer.VAO;
+        public MultiDrawElementsIndirect<TVertex, TIndex, TInstance> _indirectCommandBuffer;
+
+        private bool disposedValue;
+        private readonly object _lockObject = new();
+
+        public int CommandCount => _indirectCommandBuffer?.CommandCount ?? 0;
+
+        public DrawElementsIndirect(
+            ReadOnlySpan<TVertex> vertices,
+            ReadOnlySpan<TIndex> indices,
+            ReadOnlySpan<TInstance> instances,
+            ReadOnlySpan<DrawElementsIndirectCommand> commands,
+            BufferUsageHint vertexHint = BufferUsageHint.DynamicDraw,
+            BufferUsageHint indexHint = BufferUsageHint.DynamicDraw,
+            BufferUsageHint commandHint = BufferUsageHint.DynamicDraw,
+            BufferUsageHint instanceHint = BufferUsageHint.DynamicDraw)
+        {
+            if (vertices.IsEmpty)
+            {
+                throw new ArgumentException("Vertex data cannot be empty.", nameof(vertices));
+            }
+            if (indices.IsEmpty)
+            {
+                throw new ArgumentException("Index data cannot be empty.", nameof(indices));
+            }
+            if (commands.IsEmpty)
+            {
+                throw new ArgumentException("Command data cannot be empty.", nameof(commands));
+            }
+            lock (_lockObject)
+            {
+                try
+                {
+                    _indirectCommandBuffer = new MultiDrawElementsIndirect<TVertex, TIndex, TInstance>(
+                        vertices, indices, commands, instances, vertexHint, indexHint, commandHint, indexHint);
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"Error initializing MultiDrawElementsIndirect: {ex.Message}");
+                    Dispose(true);
+                    throw;
+                }
+            }
+        }
+        public void UpdateData(ReadOnlySpan<TVertex> vertices, ReadOnlySpan<TIndex> indices, ReadOnlySpan<DrawElementsIndirectCommand> commands)
+        {
+            if (disposedValue)
+            {
+                throw new ObjectDisposedException(nameof(DrawElementsIndirect<TVertex, TIndex, TInstance>));
+            }
+
+            lock (_lockObject)
+            {
+                try
+                {
+                    if (!vertices.IsEmpty)
+                    {
+                        _indirectCommandBuffer.UpdateVertices(vertices);
+                    }
+                    if (!indices.IsEmpty)
+                    {
+                        _indirectCommandBuffer.UpdateIndices(indices);
+                    }
+                    if (!commands.IsEmpty)
+                    {
+                        _indirectCommandBuffer.UpdateCommands(commands);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"Error updating data: {ex.Message}");
+                    throw;
+                }
+            }
+        }
+        public void UpdateSingleInstance(int index, TInstance instance)
+        {
+            if (disposedValue)
+            {
+                throw new ObjectDisposedException(nameof(DrawElementsIndirect<TVertex, TIndex, TInstance>));
+            }
+            if (index < 0 || index >= _indirectCommandBuffer.InstanceCount)
+            {
+                throw new ArgumentOutOfRangeException(nameof(index), $"Index {index} is out of range for instance count {_indirectCommandBuffer.InstanceCount}.");
+            }
+
+            lock (_lockObject)
+            {
+                try
+                {
+                    _indirectCommandBuffer.UpdateSingleInstance(index, instance);
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"Error updating instance at index {index}: {ex.Message}");
+                    throw;
+                }
+            }
+        }
+        public void DrawSingle(PrimitiveType primitiveType, int commandIndex)
+        {
+            if (disposedValue)
+            {
+                throw new ObjectDisposedException(nameof(DrawElementsIndirect<TVertex, TIndex, TInstance>));
+            }
+            if (commandIndex < 0 || commandIndex >= _indirectCommandBuffer.CommandCount)
+            {
+                throw new ArgumentOutOfRangeException(nameof(commandIndex), $"Command index {commandIndex} is out of range for command count {_indirectCommandBuffer.CommandCount}.");
+            }
+
+            lock (_lockObject)
+            {
+                try
+                {
+                    _indirectCommandBuffer.Bind();
+                    nint offset = (nint)(commandIndex * Marshal.SizeOf<DrawElementsIndirectCommand>());
+                    GL.DrawElementsIndirect(primitiveType, GetDrawElementsType(), offset);
+                    _indirectCommandBuffer.Unbind();
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"Error Drawing single command at index {commandIndex}: {ex.Message}");
+                    throw;
+                }
+            }
+        }
+
+        public void DrawMulti(PrimitiveType primitiveType)
+        {
+            DrawMulti(primitiveType, 0, _indirectCommandBuffer.CommandCount);
+        }
+
+        public void DrawMulti(PrimitiveType primitiveType, int startCommandIndex, int drawCount)
+        {
+            if (disposedValue)
+            {
+                throw new ObjectDisposedException(nameof(DrawElementsIndirect<TVertex, TIndex, TInstance>));
+            }
+            if (startCommandIndex < 0 || (startCommandIndex + drawCount) > _indirectCommandBuffer.CommandCount)
+            {
+                throw new ArgumentOutOfRangeException(nameof(startCommandIndex), $"Rendering range ({startCommandIndex}, {drawCount}) is invalid for command count {_indirectCommandBuffer.CommandCount}.");
+            }
+            if (drawCount <= 0)
+            {
+                Console.WriteLine("Warning: No commands to draw.");
+                return;
+            }
+            lock (_lockObject)
+            {
+                try
+                {
+                    _indirectCommandBuffer.Bind();
+
+                    nint offset = (nint)(startCommandIndex * Marshal.SizeOf<DrawElementsIndirectCommand>());
+
+                    GL.MultiDrawElementsIndirect(
+                        primitiveType,
+                        GetDrawElementsType(),
+                        offset,
+                        drawCount,
+                        (int)Marshal.SizeOf<DrawElementsIndirectCommand>()
+                    );
+
+                    _indirectCommandBuffer.Unbind();
+                }
+                catch (Exception ex)
+                {
+                }
+            }
+        }
+
+        private static DrawElementsType GetDrawElementsType()
+        {
+            if (typeof(TIndex) == typeof(byte)) return DrawElementsType.UnsignedByte;
+            if (typeof(TIndex) == typeof(ushort)) return DrawElementsType.UnsignedShort;
+            if (typeof(TIndex) == typeof(uint)) return DrawElementsType.UnsignedInt;
+            throw new NotSupportedException("인덱스 타입은 byte, ushort, 또는 uint여야 합니다.");
+        }
+
+        protected virtual void Dispose(bool disposing)
+        {
+            lock (_lockObject)
+            {
+                if (!disposedValue)
+                {
+
+                    try
+                    {
+                        _indirectCommandBuffer?.Dispose();
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"Error disposing MultiDrawElementsIndirect: {ex.Message}");
+                    }
+                }
+                disposedValue = true;
+            }
+        }
+
+        public void Dispose()
+        {
+            Dispose(disposing: true);
+            GC.SuppressFinalize(this);
+        }
+        ~DrawElementsIndirect()
+        {
+            Dispose(false);
+        }
+    }
+}

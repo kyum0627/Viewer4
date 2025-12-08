@@ -1,0 +1,148 @@
+﻿using IGX.ViewControl.Buffer.Common;
+using OpenTK.Graphics.OpenGL4;
+using OpenTK.Mathematics;
+
+namespace IGX.ViewControl.Render
+{
+    public class RendererMesh<Vtx> : IDisposable where Vtx : struct
+    {
+        private readonly Shader _shader;
+        private readonly ElementBuffer<Vtx, uint> buffer;
+        private readonly object _lockObject = new();
+        private bool disposedValue = false;
+        public RendererMesh(ReadOnlySpan<Vtx> vertices, ReadOnlySpan<uint> faceIndices, ReadOnlySpan<uint> edgeIndices, Shader shader)
+        {
+            if (vertices.IsEmpty)
+            {
+                throw new ArgumentException("Vertex data cannot be empty.", nameof(vertices));
+            }
+            if (faceIndices.IsEmpty)
+            {
+                throw new ArgumentException("Face indices cannot be empty.", nameof(faceIndices));
+            }
+
+            _shader = shader ?? throw new ArgumentNullException(nameof(shader));
+
+            lock (_lockObject)
+            {
+                try
+                {
+                    buffer = new ElementBuffer<Vtx, uint>(vertices, faceIndices);
+                    buffer.Bind();
+                    uint[] pindices = Enumerable.Range(0, vertices.Length).Select(i => (uint)Convert.ChangeType(i, typeof(uint))).ToArray();
+                    buffer.Unbind();
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"Error initializing ElementBuffer: {ex.Message}");
+                    throw;
+                }
+            }
+        }
+        public void UpdateData(ReadOnlySpan<Vtx> vertices, ReadOnlySpan<uint> faceIndices)
+        {
+            if (disposedValue)
+            {
+                throw new ObjectDisposedException(nameof(RendererMesh<Vtx>));
+            }
+            if (vertices.IsEmpty)
+            {
+                Console.WriteLine("Warning: No vertices to update.");
+                return;
+            }
+            if (faceIndices.IsEmpty)
+            {
+                Console.WriteLine("Warning: No face indices to update.");
+                return;
+            }
+
+            lock (_lockObject)
+            {
+                try
+                {
+                    buffer.UpdateVertices(0, vertices);
+                    buffer.UpdateIndices(0, faceIndices);
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"Error updating ElementBuffer data: {ex.Message}");
+                    throw;
+                }
+            }
+        }
+
+        public void Render(Matrix4 model, IMyCamera camera, Vector4 color, RenderMode mode)
+        {
+            if (disposedValue)
+            {
+                throw new ObjectDisposedException(nameof(RendererMesh<Vtx>));
+            }
+            if (camera == null)
+            {
+                throw new ArgumentNullException(nameof(camera));
+            }
+            lock (_lockObject)
+            {
+                try
+                {
+                    _shader.Use();
+                    _shader.SetUniformIfExist("uView", camera.ViewMatrix);
+                    _shader.SetUniformIfExist("uProjection", camera.ProjectionMatrix);
+                    _shader.SetUniformIfExist("uObjectColor", color);
+                    GLState.ErrorCheck();
+                    _shader.SetUniformIfExist("uModel", model);
+                    buffer.Bind(); // VBO 및 속성 설정이 담긴 VAO 바인딩
+                    switch (mode)
+                    {
+                        case RenderMode.Points:
+                            buffer.Draw(PrimitiveType.Points);
+                            break;
+                        case RenderMode.Faces:
+                            buffer.Draw(PrimitiveType.Triangles);
+                            break;
+                    }
+                    buffer.Unbind();
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"Error rendering: {ex.Message}");
+                    throw;
+                }
+            }
+        }
+
+        protected virtual void Dispose(bool disposing)
+        {
+            if (!disposedValue)
+            {
+                if (disposing)
+                {// 관리되는 리소스(EBO, VBO 등)를 해제.
+                    _shader?.Dispose();
+                    buffer?.Dispose();
+                }
+                disposedValue = true;
+            }
+        }
+
+        public void Dispose()
+        {
+            lock (_lockObject)
+            {
+                if (!disposedValue)
+                {
+                    try
+                    {
+                        _shader?.Dispose();
+                        buffer?.Dispose();
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"Error disposing resources: {ex.Message}");
+                    }
+                }
+                disposedValue = true;
+            }
+            GC.SuppressFinalize(this);
+        }
+    }
+}

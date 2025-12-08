@@ -1,0 +1,169 @@
+﻿using OpenTK.Graphics.OpenGL4;
+using System;
+using System.Collections.Concurrent;
+using System.Diagnostics;
+using System.Linq.Expressions;
+using System.Runtime.InteropServices;
+
+namespace IGX.ViewControl.Buffer.Common
+{
+    public class ImmutableBuffer<T> : IDisposable where T : struct
+    {
+        private static readonly ConcurrentQueue<int> _pendingDeletionHandles = new();
+        private readonly object _lockObject = new();
+        private readonly T[]? _cpuData;
+
+        public int Handle { get; private set; }
+        public int SizeInBytes { get; private set; }
+        public bool IsDisposed { get; private set; }
+        public BufferTarget Target { get; }
+        public BufferStorageFlags Flags { get; }
+        public bool KeepCpuData => _cpuData != null;
+        public Span<T> CpuData => _cpuData != null ? _cpuData.AsSpan() : throw new InvalidOperationException("CPU data is not maintained.");
+        public ImmutableBuffer(BufferTarget target, T[] data, BufferStorageFlags flags, bool keepCpuData = false)
+        {
+            if (data == null || data.Length == 0)
+            {
+                throw new ArgumentNullException(nameof(data), "Initial data array cannot be null or empty.");
+            }
+
+            Target = target;
+            Flags = flags;
+            SizeInBytes = data.Length * Marshal.SizeOf<T>();
+            try
+            {
+                lock (_lockObject)
+                {
+                    // OpenGL 4.5 이상에서 사용 가능한 GL.CreateBuffer를 사용해 핸들을 생성
+                    Handle = GL.GenBuffer();
+                    if (data != null)
+                    {
+                        GL.NamedBufferStorage(Handle, SizeInBytes, data, flags);
+                        GLState.ErrorCheck();
+                    }
+                    else
+                    {
+                        GL.NamedBufferStorage(Handle, SizeInBytes, IntPtr.Zero, flags);
+                    }
+                    if (keepCpuData)
+                    {
+                        _cpuData = new T[data.Length];
+                        data.CopyTo(_cpuData.AsSpan());
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                if (Handle != 0)
+                {
+                    _pendingDeletionHandles.Enqueue(Handle);
+                    Handle = 0;
+                }
+                throw new InvalidOperationException("Failed to initialize ImmutableBuffer.", ex);
+            }
+        }
+
+        public void UpdateData(T[] data, int offsetInElements = 0)
+        {
+            if (IsDisposed)
+            {
+                throw new ObjectDisposedException(nameof(ImmutableBuffer<T>), "Cannot update a disposed _instancedBuffer.");
+            }
+            if ((Flags & BufferStorageFlags.DynamicStorageBit) == 0)
+            {
+                throw new InvalidOperationException("This immutable _instancedBuffer does not have write access. It was not created with BufferStorageFlags.DynamicStorageBit.");
+            }
+            if (data == null)
+            {
+                throw new ArgumentNullException(nameof(data), "UpdateData data array cannot be null.");
+            }
+            if (offsetInElements < 0)
+            {
+                throw new ArgumentOutOfRangeException(nameof(offsetInElements), "Offset cannot be negative.");
+            }
+
+            int elementSize = Marshal.SizeOf<T>();
+            int byteOffset = offsetInElements * elementSize;
+            int dataSizeBytes = data.Length * elementSize;
+
+            if (byteOffset + dataSizeBytes > SizeInBytes)
+            {
+                throw new ArgumentOutOfRangeException(
+                    nameof(data),
+                    $"Update data exceeds _instancedBuffer size. Buffer size: {SizeInBytes} bytes, " +
+                    $"Update range: {byteOffset} to {byteOffset + dataSizeBytes} bytes.");
+            }
+            try
+            {
+                lock (_lockObject)
+                {
+                    GL.NamedBufferSubData(Handle, byteOffset, dataSizeBytes, data);
+                    GLState.ErrorCheck();
+
+                    if (KeepCpuData)
+                    {
+                        data.CopyTo(_cpuData!.AsSpan(offsetInElements));
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                throw new InvalidOperationException("Failed to update _instancedBuffer data.", ex);
+            }
+        }
+
+        public void Bind()
+        {
+            if (IsDisposed)
+            {
+                throw new ObjectDisposedException(nameof(ImmutableBuffer<T>));
+            }
+            if (Handle == 0)
+            {
+                Console.WriteLine("Warning: Attempting to bind an invalid _instancedBuffer handle.");
+                return;
+            }
+            lock (_lockObject)
+            {
+                GL.BindBuffer(Target, Handle);
+            }
+        }
+
+        public void Dispose()
+        {
+            lock (_lockObject)
+            {
+                if (IsDisposed)
+                {
+                    return;
+                }
+
+                if (Handle != 0)
+                {
+                    Console.WriteLine($"Warning: Cannot delete _instancedBuffer {Handle} without an active OpenGL context. Enqueued for later deletion.");
+                    _pendingDeletionHandles.Enqueue(Handle);
+                    Handle = 0;
+                }
+
+                IsDisposed = true;
+            }
+            GC.SuppressFinalize(this);
+        }
+
+        public static void ProcessPendingDeletions()
+        {
+            while (_pendingDeletionHandles.TryDequeue(out int handle))
+            {
+                try
+                {
+                    GL.DeleteBuffer(handle);
+                    Console.WriteLine($"Buffer {handle} deleted.");
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"Warning: Failed to delete _instancedBuffer {handle}: {ex.Message}");
+                }
+            }
+        }
+    }
+}

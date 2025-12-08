@@ -1,0 +1,116 @@
+﻿using System;
+using System.Collections.Generic;
+using IGX.Geometry.Common;
+using OpenTK.Mathematics;
+
+namespace IGX.Geometry.DataStructure.IgxMesh
+{
+    public static class LineStringDecomposer
+    { // 라인 스트링이 동일 평면 위에 있는 경우, 직선 부위와 곡선부위(주로 Arc, Spline)를 구분하여 분리
+        // 두 점 간의 유클리드 거리 계산
+        private static float EuclideanDistance(Vector3 point1, Vector3 point2)
+        {
+            return (point1 - point2).Length;
+        }
+        // 곡률 계산
+        private static float CalculateCurvature(Vertex prev, Vertex current, Vertex next)
+        {
+            Vector3 AB = current.Position - prev.Position;
+            Vector3 BC = next.Position - current.Position;
+
+            // 두 벡터의 외적을 구해 곡률 계산
+            Vector3 crossProduct = Vector3.Cross(AB, BC);
+            return crossProduct.Length / (AB.Length * BC.Length); // 곡률
+        }
+
+        // 직선 구간과 원호 구간 분리
+        public static List<List<Vertex>> DecomposeLineString(List<Vertex> vertices)
+        {
+            List<List<Vertex>> decomposedSegments = new();
+            List<Vertex> currentSegment = new();
+            List<Vertex> arcSegment = new();
+
+            const float curvatureThreshold = 0.01f; // 직선과 원호를 구분할 곡률 임계값
+            const float curvatureDifferenceThreshold = 0.005f; // 원호 구간 내 곡률 변화 허용 범위
+
+            float previousCurvature = 0;
+            //bool inArc = false;
+
+            for (int i = 1; i < vertices.Count - 1; i++)
+            {
+                // 현재 점과 앞뒤 점을 사용하여 곡률 계산
+                float curvature = CalculateCurvature(vertices[i - 1], vertices[i], vertices[i + 1]);
+
+                // 직선 구간: 곡률이 작으면 직선으로 판단
+                if (curvature < curvatureThreshold)
+                {
+                    // 직선 구간 처리
+                    if (arcSegment.Count > 0)
+                    {
+                        decomposedSegments.Add(new List<Vertex>(arcSegment));  // 이전에 원호 구간이 있다면 추가
+                        arcSegment.Clear();
+                    }
+                    currentSegment.Add(vertices[i]);
+                }
+                else
+                {
+                    // 원호 구간: 곡률 차이가 일정 범위 이내인 경우 연속된 원호 구간으로 묶기
+                    if (arcSegment.Count == 0 || Math.Abs(curvature - previousCurvature) < curvatureDifferenceThreshold)
+                    {
+                        arcSegment.Add(vertices[i]);
+                        //inArc = true;
+                    }
+                    else
+                    {
+                        // 곡률 차이가 크면 원호 구간을 마치고 직선 구간을 새로 시작
+                        if (currentSegment.Count > 0)
+                        {
+                            decomposedSegments.Add(new List<Vertex>(currentSegment));
+                            currentSegment.Clear();
+                        }
+                        arcSegment.Clear(); // 새 원호 구간 시작
+                        arcSegment.Add(vertices[i]);
+                    }
+                }
+                previousCurvature = curvature;
+            }
+
+            // 남은 구간 처리
+            if (arcSegment.Count > 0)
+            {
+                decomposedSegments.Add(new List<Vertex>(arcSegment));  // 마지막 원호 구간 추가
+            }
+            if (currentSegment.Count > 0)
+            {
+                decomposedSegments.Add(new List<Vertex>(currentSegment));  // 마지막 직선 구간 추가
+            }
+
+            return decomposedSegments;
+        }
+
+        // 테스트
+        public static void Test()
+        {
+            // 예시 정점 데이터 (위치와 노말)
+            List<Vertex> vertices = new()
+            {
+                new (new (0, 0, 0), new (1, 0, 0)),
+                new (new (1, 1, 0), new (1, 0, 0)),
+                new (new (2, 4, 0), new (1, 0, 0)),
+                new (new (3, 7, 0), new (1, 0, 0)),
+                new (new (5, 10, 0), new (1, 0, 0)),
+                new (new (7, 13, 0), new (1, 0, 0)),
+                new (new (10, 15, 0), new (0, 1, 0))  // 방향 변경
+            };
+
+            // 라인스트링 분해
+            List<List<Vertex>> decomposedSegments = DecomposeLineString(vertices);
+
+            // 결과 출력
+            foreach (List<Vertex> segment in decomposedSegments)
+            {
+                System.Diagnostics.Debug.WriteLine($"Segment: {segment.Count} Vertices");
+            }
+        }
+    }
+}

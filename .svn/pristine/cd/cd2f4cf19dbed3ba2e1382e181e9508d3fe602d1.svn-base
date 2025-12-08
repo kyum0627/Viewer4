@@ -1,0 +1,176 @@
+﻿using IGX.Loader;
+using IGX.ViewControl.Render;
+using OpenTK.GLControl;
+using OpenTK.Graphics.OpenGL4;
+using System;
+
+namespace IGX.ViewControl
+{
+    public class GLView : IDisposable
+    {
+        // 기본적인 context만 공유 (GPU로 전달된 정점, 인덱스),
+        // 인스턴스, 커멘드 등의 버퍼는 선택 결과에 따라 달라야할까?
+        // 기타, camera, 그리기 방법(하이라이트, 삼각 메쉬, 점 ...) 등이 다를 수 있음.
+        // 따라서, 기본적으로 GLControl을 공유하는 것이 아니라 context를 공유
+        private readonly GLControl _glControl;
+        private readonly IgxViewAPI _apis;
+        private readonly RendererStrategy _renderer;
+        private readonly ViewportController _viewportController;
+        private readonly RendererAuxilliary _auxiliaryRenderManager;
+        private bool _isDisposed;
+
+        public IgxViewAPI APIs => _apis;
+        public IMyCamera Camera { get; }
+
+        public GLView(IgxViewAPI paramApi, GLControl glControl)
+        {
+            _apis = paramApi ?? throw new ArgumentNullException(nameof(paramApi));
+            _glControl = glControl ?? throw new ArgumentNullException(nameof(glControl));
+
+            Camera = _apis.Scene.Camera;
+
+            _renderer = new RendererStrategy(_apis, _glControl);
+            _viewportController = new ViewportController(_apis, _glControl, Camera);
+            _auxiliaryRenderManager = new RendererAuxilliary(_apis, _glControl);
+
+            _glControl.Load += GlControl_Load;
+            _glControl.Paint += GlControl_Paint;
+            _glControl.Resize += GlControl_Resize;
+            _glControl.MouseDown += _viewportController.OnMouseDown;
+            _glControl.MouseUp += _viewportController.OnMouseUp;
+            _glControl.MouseMove += _viewportController.OnMouseMove;
+            _glControl.MouseWheel += _viewportController.OnMouseWheel;
+            _glControl.MouseLeave += _viewportController.OnMouseLeave;
+        }
+
+        public void GlControl_Load(object? sender, EventArgs e)
+        {
+            _glControl.MakeCurrent();
+            Camera.SetViewportSize(_glControl.Width, _glControl.Height);
+            _renderer.Initialize(_glControl.Width, _glControl.Height);
+            _auxiliaryRenderManager.Initialize(_glControl.Width, _glControl.Height);
+        }
+
+        public void GlControl_Paint(object? sender, PaintEventArgs e)
+        {
+            if (_isDisposed || !_glControl.IsHandleCreated) return;
+            _glControl.MakeCurrent();
+            _renderer.Draw(Camera);
+            _auxiliaryRenderManager.Draw(Camera, _apis.ModelManager.Models.Count > 0);
+            _glControl.SwapBuffers();
+        }
+
+        public void GlControl_Resize(object? sender, EventArgs e)
+        {
+            if (_isDisposed || !_glControl.IsHandleCreated || (_glControl.FindForm()?.WindowState == FormWindowState.Minimized)) return;
+            _glControl.MakeCurrent();
+            GL.Viewport(0, 0, Math.Max(1, _glControl.Width), Math.Max(1, _glControl.Height));
+            _renderer.Resize(_glControl.Width, _glControl.Height);
+            Camera.SetViewportSize(Math.Max(1, _glControl.Width), Math.Max(1, _glControl.Height));
+            _glControl.Invalidate();
+        }
+
+        public void ClearModelData()
+        {
+            _apis.ModelManager.ClearModels();
+            _apis.SelectionManager.PickedItems.Clear();
+            _apis.SelectionManager.NormalsToDraw.Clear();
+            _apis.SelectionManager.BoxesToDraw.Clear();
+            _apis.ClipPlanes.Clear();
+            _glControl.Invalidate();
+        }
+
+        public void FitModel_Click(object sender, EventArgs e)
+        {
+            Camera.Fit(_apis.Scene.TotalBoundingBox);
+            _glControl.Invalidate();
+        }
+
+        public void SetViewDirection(object sender, EventArgs e)
+        {
+            ViewDirection? direction = null;
+            if (sender is Control ctrl && ctrl.Tag is ViewDirection d1)
+            {
+                direction = d1;
+            }
+            else if (sender is ToolStripItem item && item.Tag is string tagStr && Enum.TryParse(tagStr, out ViewDirection parsed))
+            {
+                direction = parsed;
+            }
+            if (direction.HasValue)
+            {
+                Camera.SetViewDirection(direction.Value);
+                _glControl.Invalidate();
+            }
+        }
+
+        public void ToggleRenderMode(object sender, EventArgs e)
+        {
+            switch (_apis.Shading.Mode)
+            {
+                case ShadeMode.Flat:
+                    _apis.Shading.Mode = ShadeMode.Xray;
+                    break;
+                case ShadeMode.Xray:
+                    _apis.Shading.Mode = ShadeMode.OUTLINE;
+                    break;
+                case ShadeMode.OUTLINE:
+                    _apis.Shading.Mode = ShadeMode.Phong;
+                    break;
+                case ShadeMode.Phong:
+                    _apis.Shading.Mode = ShadeMode.Flat;
+                    break;
+            }
+            _glControl.Invalidate();
+        }
+
+        public void TogglSelect(object sender, EventArgs e)
+        {
+            _apis.SelectionManager.Selection.Enable = !_apis.SelectionManager.Selection.Enable;
+            _glControl.Invalidate();
+        }
+
+        public void ApplySelectColor(object sender, EventArgs e)
+        {
+            _glControl.Invalidate();
+        }
+
+
+        public void Dispose()
+        {
+            Dispose(true);
+            GC.SuppressFinalize(this);
+        }
+
+        protected virtual void Dispose(bool disposing)
+        {
+            if (_isDisposed) return;
+
+            if (disposing)
+            {
+                _glControl.Load -= GlControl_Load;
+                _glControl.Paint -= GlControl_Paint;
+                _glControl.Resize -= GlControl_Resize;
+                _glControl.MouseDown -= _viewportController.OnMouseDown;
+                _glControl.MouseUp -= _viewportController.OnMouseUp;
+                _glControl.MouseMove -= _viewportController.OnMouseMove;
+                _glControl.MouseWheel -= _viewportController.OnMouseWheel;
+                _glControl.MouseLeave -= _viewportController.OnMouseLeave;
+
+                _auxiliaryRenderManager.Dispose();
+
+                if (_glControl.IsHandleCreated)
+                {
+                    _glControl.MakeCurrent();
+                    _renderer.Dispose();
+                }
+            }
+
+            _isDisposed = true;
+        }
+        public void RefreshControl()
+        {
+            _glControl.Invalidate();
+        }
+    }
+}

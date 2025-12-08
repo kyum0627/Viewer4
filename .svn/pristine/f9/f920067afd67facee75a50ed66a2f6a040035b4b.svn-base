@@ -1,0 +1,103 @@
+﻿using System;
+using System.Collections.Generic;
+using OpenTK.Mathematics;
+using IGX.Geometry.Common;
+
+namespace IGX.Geometry.Intersect
+{
+    public class IntersectPlane3Plane3
+    {
+        public bool intersect;
+        public bool isLine;
+
+        //Line3f line;
+        //Plane3f plane;
+
+        public IntersectionResult3 result;
+
+        public bool Test(Plane3f plane0, Plane3f plane1)
+        {
+            result = new IntersectionResult3();
+            //float dot = Vector3.Dot(plane0.norID, plane1.norID);
+            float dot = plane0.normal.Dot(plane1.normal);
+
+            if (Math.Abs(dot) < 1f)
+            {
+                result.status = IntersectionResult.INTERSECT;
+                result.type = IntersectionType.LINE;
+                return true;
+            }
+
+            float cDiff;
+            if (dot >= 0f)
+            {
+                // colors are in same Direction, need to look at c0-c1.
+                cDiff = plane0.distance - plane1.distance;
+            }
+            else
+            {
+                // colors are in opposite directions, need to look at c0+c1.
+                cDiff = plane0.distance + plane1.distance;
+            }
+            if (Math.Abs(cDiff) == 0f)
+            {
+                result.status = IntersectionResult.INTERSECT;
+                result.type = IntersectionType.PLANE;
+            }
+            else
+            {
+                result.status = IntersectionResult.NOTINTERSECT;
+                result.type = IntersectionType.NONE;
+            }
+
+            return result.type != IntersectionType.NONE;
+        }
+
+        public IntersectionType Compute(Plane3f plane0, Plane3f plane1)
+        {
+            result = new IntersectionResult3();
+
+            float dot = Vector3.Dot(plane0.normal, plane1.normal);
+            if (Math.Abs(dot) >= 1f)
+            {
+                // The planes are parallel.  Check if they are coplanar.
+                float cDiff;
+                if (dot >= 0f)
+                {
+                    // colors are in same Direction, need to look at c0-c1.
+                    cDiff = plane0.distance - plane1.distance;
+                }
+                else
+                {
+                    // colors are in opposite directions, need to look at
+                    // c0+c1.
+                    cDiff = plane0.distance + plane1.distance;
+                }
+
+                if (Math.Abs(cDiff) == 0f)
+                {
+                    // The planes are coplanar.
+                    result.status = IntersectionResult.INTERSECT;
+                    result.type = IntersectionType.PLANE;
+                    return result.type;
+                }
+
+                // The planes are parallel but distinct.
+                result.status = IntersectionResult.NOTINTERSECT;
+                result.type = IntersectionType.NONE;
+                return result.type;
+            }
+            float invDet = 1 / (1 - (dot * dot));
+            float c0 = (plane0.distance - (dot * plane1.distance)) * invDet;
+            float c1 = (plane1.distance - (dot * plane0.distance)) * invDet;
+            result.status = IntersectionResult.INTERSECT;
+            result.type = IntersectionType.LINE;
+            result.points = new List<Vector3>
+            {
+                (c0 * plane0.normal) + (c1 * plane1.normal),
+                Vector3.Normalize(plane0.normal.Cross(plane1.normal)) // line Direction
+            };
+            return result.type;
+        }
+    }
+}

@@ -1,0 +1,1922 @@
+﻿using System;
+using System.Collections.Generic;
+using OpenTK.Mathematics;
+
+namespace IGX.Geometry.Common
+{
+    // geometry를 다루는 application 개발에 필요한 각종 test private void  모음
+    // area, barycenter, 평행, 직교, inside/outside, on/under/upper, ....
+    // 삼각형의 외접원의 중심, 삼각형의 무게중심
+
+    public enum LeftOnRight
+    {
+        Left, On, Right
+    }
+
+    public enum OutsideOnInside
+    {
+        Outside, On, Inside
+    }
+    public static class GeometricTools
+    {
+        public enum OrderType
+        {
+            Q0_EQUALS_Q1,
+            P_EQUALS_Q0,
+            P_EQUALS_Q1,
+            LEFT,
+            RIGHT,
+            COLINEAR_NEGATIVE,
+            COLINEAR_POSITIVE,
+            COLINEAR_BETWEEN
+        };
+
+        /// <summary>
+        /// https://math.stackexchange.com/questions/128991/how-to-calculate-the-area-of-a-3d-triangle
+        /// </summary>
+        /// <param name="p1"></param>
+        /// <param name="p2"></param>
+        /// <param name="p3"></param>
+        /// <returns>세 점이 형성하는 양의 면적</returns>
+        public static float Area(Vector3 p1, Vector3 p2, Vector3 p3)
+        {
+            Vector3 crossproduct = GetCrossProduct(p1, p2, p3, false);
+            float parallelogramArea = crossproduct.Length;
+            float triangleArea = parallelogramArea * 0.5f;
+            return triangleArea;
+        }
+
+        /// <summary>
+        /// 한 변의 길이가 edgeLength인 정 nID 각형의 면적
+        /// </summary>
+        /// <param name="n"></param>
+        /// <param name="edgeLength"></param>
+        /// <returns>항상 positive or 0</returns>
+        public static float AreaOfRegularPolygon(int n, float edgeLength)
+        {
+            return 0.25f * n * edgeLength * edgeLength * (float)(Math.Cos(MathUtil.Pi / n) / Math.Sin(MathUtil.Pi / n));
+        }
+
+        /// <summary>
+        /// A,B,C로 구성된 삼각형에 대하여 점 P의 barycentric coordinates 계산
+        /// 1. A, B, C가 선형적으로 독립이고
+        /// 2. P = b0*A + b1*B + b2*C,
+        /// 3. 여기서, b0 + b1 + b2 = 1
+        /// 즉, A, B, C의 행렬값이 >= epsilon 이면 bary와 true return
+        /// 아니면 bary = 0와 false 리턴
+        /// 중심의 barycentric은 { 1:1:1 }
+        /// </summary>
+        /// <param name="v0">삼각형을 구성하는 첫 번째 점</param>
+        /// <param name="v1">삼각형을 구성하는 두 번째 점</param>
+        /// <param name="v2">삼각형을 구성하는 세 번째 점</param>
+        /// <param name="bary">output : barycentric parameters</param>
+        /// <param name="epsilon">계산허용 오차</param>
+        /// <returns>V0id, Vertex0, V2의 행렬값이 >= epsilon 이면 true</returns>
+        public static bool BarycentricCoordinate(Vector2 point, Vector2 v0, Vector2 v1, Vector2 v2, ref Vector3 bary, float epsilon = MathUtil.ZeroTolerance)
+        {
+            Vector2[] diff = new Vector2[3]
+            {
+                v0 - v2,
+                v1 - v2,
+                point - v2
+            };
+
+            float det = Vector2.PerpDot(diff[0], diff[1]);
+            if (det < -epsilon || det > epsilon)
+            {
+                float invDet = 1 / det;
+                bary[0] = Vector2.PerpDot(diff[2], diff[1]) * invDet;
+                bary[1] = Vector2.PerpDot(diff[0], diff[2]) * invDet;
+                bary[2] = 1 - bary[0] - bary[1];
+                return true;
+            }
+
+            /// 세 점이 허용 오차 범위내에서 동일 직선상에 놓여 barycenter를 구할 수 없음
+            for (int i = 0; i < 3; ++i)
+            {
+                bary[i] = 0f;
+            }
+            return false;
+        }
+
+        public static bool BarycentricCoordinate(Vector3 point, Vector3 v0, Vector3 v1, Vector3 v2, ref Vector3 bary, float epsilon = MathUtil.ZeroTolerance)
+        {
+            Vector3 normal = GetCrossProduct(v0, v1, v2, true);
+
+            // point가 삼각형과 같은 평면내에 있는지 검사
+            if (Math.Abs(Vector3.Dot(point - v0, normal)) > epsilon)
+            {
+                return false;
+            }
+
+            // 2차원 평면에 투영시킨 삼각형을 구해서 barycentric coordinate를 계산
+            int ig = normal.MaxLengthCoordinate(); // 투영면 선택
+
+            return BarycentricCoordinate(point.Get2DVector(ig),
+                                            v0.Get2DVector(ig),
+                                            v1.Get2DVector(ig),
+                                            v2.Get2DVector(ig),
+                                            ref bary, epsilon);
+        }
+
+        /// <summary>
+        /// 사면체(tetrahedron)내의 point pID 의 bary centric coordinate를 계산해서 out
+        /// bary(r, s, t) = test point와 삼각형의 각 꼭지점의 쌍들이 이루는 삼각형의 signed area / 기존 삼각형 면적
+        /// r + s + t = 1
+        /// https://en.wikipedia.org/wiki/Barycentric_coordinate_system
+        /// </summary>
+        /// <param name="test"></param>
+        /// <param name="v0"></param>
+        /// <param name="v1"></param>
+        /// <param name="v2"></param>
+        /// <param name="v3"></param>
+        /// <param name="bary">basycentric coordinate</param>
+        /// <param name="epsilon"></param>
+        /// <returns></returns>
+        public static bool BarycentricCoordinateInTetrahedron(Vector3 test, Vector3 v0, Vector3 v1, Vector3 v2, Vector3 v3, out float[] bary, float epsilon = MathUtil.ZeroTolerance)
+        {
+            Vector3[] diff = new Vector3[4] { v0 - v3, v1 - v3, v2 - v3, test - v3 };
+
+            bary = new float[4];
+
+            float det = diff[0].DotAfterCross(diff[1], diff[2]);
+            if (det < -epsilon || det > epsilon)
+            {
+                float invDet = 1 / det;
+                bary[0] = diff[3].DotAfterCross(diff[1], diff[2]) * invDet;
+                bary[1] = diff[3].DotAfterCross(diff[2], diff[0]) * invDet;
+                bary[2] = diff[3].DotAfterCross(diff[0], diff[1]) * invDet;
+                bary[3] = 1f - bary[0] - bary[1] - bary[2];
+                return true;
+            }
+
+            for (int i = 0; i < 4; ++i)
+            {
+                bary[i] = 0f;
+            }
+            return false;
+        }
+
+        /// <summary>
+        /// 세 점 v0, v1, v2가 이루는 삼각형을 포함하는 외접원의 중심
+        /// </summary>
+        /// <param name="v0"></param>
+        /// <param name="v1"></param>
+        /// <param name="v2"></param>
+        /// <returns></returns>
+        public static Vector2 Circumcenter(Vector2 v0, Vector2 v1, Vector2 v2)
+        {
+            // a, b, c를 삼각형의 각 변의 길이라고 할 때
+            // bary centric 표현에 의한
+            // 1. 외접원의 중심 좌표는
+            //    a^2 (-a^2 + b^2 + c^2) : b^2 (a^2 - b^2 + c^2) : c^2 (a^2 + b^2 - c^2)
+            // 2. 내접원의 중심 좌표는
+            //    a : b : c
+
+            float a2 = (v2 - v1).LengthSquared; // a^2
+            float b2 = (v2 - v0).LengthSquared; // b^2
+            float c2 = (v1 - v0).LengthSquared; // c^2
+
+            float r = a2 * (-a2 + b2 + c2);
+            float s = b2 * (a2 - b2 + c2);
+            float t = c2 * (a2 + b2 - c2);
+
+            return Math.Abs(r + s + t) < MathUtil.ZeroTolerance ? Vector2.Zero : ((r * v0) + (s * v1) + (t * v2)) / (r + s + t);
+        }
+
+        /// <summary>
+        /// 세 점 v0, v1, v2가 이루는 삼각형을 포함하는 외접원의 중심
+        /// </summary>
+        /// <param name="v0"></param>
+        /// <param name="v1"></param>
+        /// <param name="v2"></param>
+        /// <returns></returns>
+        public static Vector3 Circumcenter(Vector3 v0, Vector3 v1, Vector3 v2)
+        {
+            float a2 = (v2 - v1).LengthSquared;
+            float b2 = (v2 - v0).LengthSquared;
+            float c2 = (v1 - v0).LengthSquared;
+
+            float r = a2 * (-a2 + b2 + c2);
+            float s = b2 * (a2 - b2 + c2);
+            float t = c2 * (a2 + b2 - c2);
+
+            return Math.Abs(r + s + t) < MathUtil.ZeroTolerance ? Vector3.Zero : ((r * v0) + (s * v1) + (t * v2)) / (r + s + t);
+        }
+
+        /// <summary>
+        /// 선분을 plane으로 자르기, plane norID 방향의 default_nsegs
+        /// </summary>
+        /// <param name="s"></param>
+        /// <param name="plane"></param>
+        /// <returns></returns>
+        public static Segment3f ClipSegmentByPlane(Segment3f s, Plane3f plane, float tolrerance = MathUtil.ZeroTolerance)
+        {
+            Segment3f newseg = new();
+            // default_nsegs 의 P0, P1이 plane의 어느쪽에 있는지 검사
+            int ip0 = GetPointRelationToPlane(s.P0, plane, tolrerance);
+            int ip1 = GetPointRelationToPlane(s.P1, plane, tolrerance);
+
+            // 선분 전체 clip : 두점 모두 plane의 positive side 혹은 plane 위에 존재
+            if ((ip0 == 0 && ip1 == 0) ||
+                (ip0 == 0 && ip1 == 1) ||
+                (ip0 == 1 && ip1 == 0) ||
+                (ip0 == 1 && ip1 == 1))
+            {
+                return s;
+            }
+
+            // clip할 선분 없음 : 한점은 plane면 위에 다른 한 점은 negative side에 존재
+            if ((ip0 == -1 && ip1 == 0) ||
+                (ip0 == 0 && ip1 == -1))
+            {
+                return newseg;
+            }
+
+            // 선분 일부 clip : 서로 반대면에 존재
+            if (ip0 == -ip1)
+            {
+                float x = (plane.distance - Vector3.Dot(plane.normal, s.P0)) / Vector3.Dot(plane.normal, s.direction);
+                Vector3 point = s.P0 + (s.direction * x);
+                if (ip0 == -1)
+                {
+                    newseg = new Segment3f(point, s.P1);
+                }
+                else
+                {
+                    newseg = new Segment3f(s.P0, point);
+                }
+            }
+            return newseg;
+        }
+
+        /// <summary>
+        /// 2D 점과 직선간의 최단 거리점
+        /// </summary>
+        /// <param name="p"></param>
+        /// <param name="line"></param>
+        /// <returns></returns>
+        public static Vector2 ClosestPoint(Vector2 p, Line2f line)
+        {
+            return line.Point + (Vector2.Dot(line.Direction, p - line.Point) * line.Direction);
+        }
+
+        /// <summary>
+        /// 3D 점과 직선간의 최단 거리점
+        /// </summary>
+        /// <param name="p"></param>
+        /// <param name="line"></param>
+        /// <returns></returns>
+        public static Vector3 ClosestPoint(Vector3 p, Line3f line)
+        {
+            return line.origin + (Vector3.Dot(line.direction, p - line.origin) * line.direction);
+        }
+
+        /// <summary>
+        /// 2D 점과 선분간의 최단 거리점
+        /// </summary>
+        /// <param name="p"></param>
+        /// <param name="seg"></param>
+        /// <param name="isInSegment"></param>
+        /// <returns></returns>
+        public static Vector2 ClosestPoint(Vector2 p, Segment2f seg, bool isInSegment, float epsilon = MathUtil.ZeroTolerance)
+        {
+            Vector2 a = seg.P0;
+            Vector2 b = seg.P1;
+            Vector2 ab = b - a;
+            Vector2 ap = p - a;
+            float distance = Vector2.Dot(ap, ab) / ab.LengthSquared;
+
+            if (isInSegment && distance < 0f - epsilon)
+            {
+                return a;
+            }
+            else
+            {
+                return isInSegment && distance > 1f + epsilon ? b : a + (ab * distance);
+            }
+        }
+
+        /// <summary>
+        /// 3D 점과 선분간의 최단 거리점
+        /// </summary>
+        /// <param name="p"></param>
+        /// <param name="seg"></param>
+        /// <returns></returns>
+        public static Vector3 ClosestPoint(Vector3 p, Segment3f seg, bool isInSegment = true, float epsilon = MathUtil.ZeroTolerance)
+        {
+            float t = Vector3.Dot(p - seg.center, seg.direction);
+            if (isInSegment && t > seg.extent + epsilon)
+            {
+                return seg.P1;
+            }
+
+            return isInSegment && t < -seg.extent - epsilon ? seg.P0 : seg.center + (t * seg.direction);
+        }
+
+        /// <summary>
+        /// 2D, p0ID, p1ID, p3로 구성된 삼각형의 무게 중심
+        /// </summary>
+        /// <param name="p1"></param>
+        /// <param name="p2"></param>
+        /// <param name="p3"></param>
+        /// <returns></returns>
+        public static Vector3 COG(Vector3 p1, Vector3 p2, Vector3 p3)
+        {
+            Vector3 center = (p1 + p2 + p3) * (1f / 3f);
+            return center;
+        }
+
+        /// <summary>
+        /// 3D, p0ID, p1ID, p3로 구성된 삼각형의 무게 중심
+        /// </summary>
+        /// <param name="p1"></param>
+        /// <param name="p2"></param>
+        /// <param name="p3"></param>
+        /// <returns></returns>
+        public static Vector2 COG(Vector2 p1, Vector2 p2, Vector2 p3)
+        {
+            Vector2 center = (p1 + p2 + p3) * (1f / 3f);
+            return center;
+        }
+
+        /// <summary>
+        /// p0ID, p1ID, p3로 구성된 삼각형의 회전 방향이 CCW이면 true
+        /// https://en.wikipedia.org/wiki/Curve_orientation
+        /// </summary>
+        /// <param name="p1"></param>
+        /// <param name="p2"></param>
+        /// <param name="p3"></param>
+        /// <returns></returns>
+        public static bool IsCCW(Vector2 p1, Vector2 p2, Vector2 p3)
+        {
+            return (p1.X * p2.Y) + (p3.X * p1.Y) + (p2.X * p3.Y) - (p1.X * p3.Y) - (p3.X * p2.Y) > (p2.X * p1.Y);
+        }
+
+        public static bool AreColinear(Vector2 point, Vector2 Q0, Vector2 Q1, float Tolerance = MathUtil.ZeroTolerance)
+        {
+            return (Q1 - Q0).PerpDot(point - Q0) < Tolerance;
+        }
+
+        public static bool AreColinear(Vector3 point, Vector3 Q0, Vector3 Q1, float Tolerance = MathUtil.ZeroTolerance)
+        {
+            return (Q1 - Q0).Cross(point - Q0).LengthSquared < Tolerance;
+        }
+
+        public static bool AreColinear(Vector2 P0, Vector2 P1, Vector2 Q0, Vector2 Q1, float tolerance = MathUtil.EpsilonAngleR)
+        {
+            float x1 = P0.X;
+            float x2 = P1.X;
+            float x3 = Q0.X;
+            float x4 = Q1.X;
+            float y1 = P0.Y;
+            float y2 = P1.Y;
+            float y3 = Q0.Y;
+            float y4 = Q1.Y;
+
+            float den = Math.Abs(((y4 - y3) * (x2 - x1)) - ((x4 - x3) * (y2 - y1)));
+            float u_a = Math.Abs(((x4 - x3) * (y1 - y3)) - ((y4 - y3) * (x1 - x3)));
+            float u_b = Math.Abs(((x2 - x1) * (y1 - y3)) - ((y2 - y1) * (x1 - x3)));
+
+            if (den < tolerance)
+            {
+                // parallel
+                if (u_a < tolerance && u_b < tolerance)
+                {
+                    // colinear
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        /// <summary>
+        /// 두 세그먼트가 허용 오차 내에서 동일 직선위에 있으면 true
+        /// </summary>
+        /// <param name="A"></param>
+        /// <param name="B"></param>
+        /// <param name="tolerance"></param>
+        /// <returns></returns>
+        public static bool AreColinear(Segment2f A, Segment2f B, float tolerance = MathUtil.EpsilonAngleR)
+        {
+            if (AreParallel(A, B, tolerance))
+            {
+                if (Math.Abs(B.direction.CrossDot(A.center - B.center)) < tolerance)
+                {
+                    return true;
+                }
+            }
+            return false;
+            //return AreColinear(A.P0, A.P1, B.P0, B.P1, tolerance);
+        }
+
+        public static bool AreColinear(Segment3f A, Segment3f B, float tolerance = MathUtil.EpsilonAngleR)
+        {
+            if (AreParallel(A, B, tolerance))
+            {
+                if (Math.Abs(B.direction.Cross(A.center - B.center).LengthSquared) < tolerance)
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        /// <summary>
+        /// 두 면이 허용 오차 내에서 동일 평면위에 있는지 조사
+        /// </summary>
+        /// <param name="plane0"></param>
+        /// <param name="plane1"></param>
+        /// <param name="epsAngle">각도 허용오차</param>
+        /// <param name="epsDistance">거리 허용오차</param>
+        /// <returns></returns>
+        public static bool AreCoplannar(Plane3f plane0, Plane3f plane1, float epsAngle = MathUtil.EpsilonAngleR, float epsDistance = MathUtil.ZeroTolerance)
+        {
+            bool bParallel = Math.Abs(Vector3.Dot(plane0.normal, plane1.normal)) > 1f - epsAngle;
+            bool bDistance = Math.Abs(Vector3.Dot(plane0.normal, plane1.V0) - plane0.distance) < epsDistance;
+            return bParallel && bDistance;
+        }
+
+        public static bool AreCoplannar(Segment3f segment0, Segment3f segment1, float epsDistance = MathUtil.ZeroTolerance)
+        {
+            //     | x1 y1 z1 1 |
+            // det | x2 y2 z2 1 | == 0, Coplanar, != 0 -> Skew
+            //     | x3 y3 z3 1 |
+            //     | x4 y4 z4 1 |
+            Matrix4 m = new()
+            {
+                Row0 = new Vector4(segment0.P0, 1),
+                Row1 = new Vector4(segment0.P1, 1),
+                Row2 = new Vector4(segment1.P0, 1),
+                Row3 = new Vector4(segment1.P1, 1)
+            };
+            return Math.Abs(m.Determinant) <= epsDistance;
+        }
+
+        public static bool AreCoplannar(Segment3f seg, Plane3f plane, float tolerance = MathUtil.ZeroTolerance)
+        {
+            return Math.Abs(Vector3.Dot(plane.normal, seg.direction)) < tolerance;
+        }
+
+        /// <summary>
+        /// 삼각형 t1이 삼각형 t2내부에 있는지 검토
+        /// </summary>
+        /// <param name="t1"></param>
+        /// <param name="t2"></param>
+        /// <returns></returns>
+        public static bool A_Contains_B(Triangle2 t1, Triangle2 t2)
+        {
+            bool isWithin = false;
+
+            if (
+                PisInsideTriangle(t1.A, t2, false) &&
+                PisInsideTriangle(t1.B, t2, false) &&
+                PisInsideTriangle(t1.C, t2, false))
+            {
+                isWithin = true;
+            }
+            return isWithin;
+        }
+
+        /// <summary>
+        /// line 이 plane과 교차하는지 검토.
+        /// 한 점에서 만날 때만 true
+        /// line 이 plane에 내포될 경우 false
+        /// </summary>
+        /// <param name="line"></param>
+        /// <param name="plane"></param>
+        /// <returns></returns>
+        public static bool AreIntersect(Line3f line, Plane3f plane, float tolerance = MathUtil.ZeroTolerance)
+        {
+            float L0 = Vector3.Dot(line.origin, plane.normal);
+
+            return L0 >= tolerance;
+        }
+
+        /// <summary>
+        /// 두 세그먼트가 서로 교차하면 true
+        /// </summary>
+        /// <param name="a"></param>
+        /// <param name="b"></param>
+        /// <param name="includeEndPoints"></param>
+        /// <param name="ZeroTollarance"></param>
+        /// <returns></returns>
+        public static bool AreIntersect(Segment2f a, Segment2f b, bool includeEndPoints, float ZeroTollarance = MathUtil.ZeroTolerance)
+        {
+            bool isIntersecting = false;
+            float denominator = ((b.P1.Y - b.P0.Y) * (a.P1.X - a.P0.X)) - ((b.P1.X - b.P0.X) * (a.P1.Y - a.P0.Y));
+
+            // 분모가 0인지 확인
+            if (denominator > 0f + ZeroTollarance || denominator < 0f - ZeroTollarance)
+            { // 평행하지 않음
+                float u_a = (((b.P1.X - b.P0.X) * (a.P0.Y - b.P0.Y)) - ((b.P1.Y - b.P0.Y) * (a.P0.X - b.P0.X))) / denominator;
+                float u_b = (((a.P1.X - a.P0.X) * (a.P0.Y - b.P0.Y)) - ((a.P1.Y - a.P0.Y) * (a.P0.X - b.P0.X))) / denominator;
+
+                // 양 끝 점이 같으면 교차
+                if (includeEndPoints)
+                {
+                    float zero = 0f - ZeroTollarance;
+                    float one = 1f + ZeroTollarance;
+
+                    if (u_a >= zero && u_a <= one && u_b >= zero && u_b <= one)
+                    {// u_a, u_b가 [0, 1] 이거나 0 or 1 이면
+                        isIntersecting = true;
+                    }
+                }
+                else
+                {
+                    float zero = 0f + ZeroTollarance;
+                    float one = 1f - ZeroTollarance;
+
+                    if (u_a > zero && u_a < one && u_b > zero && u_b < one)
+                    {// u_a, u_b가 [0, 1]
+                        isIntersecting = true;
+                    }
+                }
+            }
+            else
+            { // 평행
+                isIntersecting = false;
+            }
+            return isIntersecting;
+        }
+
+        public static bool TriangleABCcontainsP(Vector2 A, Vector2 B, Vector2 C, Vector2 P)
+        {
+            Vector2 v0 = C - A;
+            Vector2 v1 = B - A;
+            Vector2 v2 = P - A;
+
+            float dot00 = Vector2.Dot(v0, v0);
+            float dot01 = Vector2.Dot(v0, v1);
+            float dot02 = Vector2.Dot(v0, v2);
+            float dot11 = Vector2.Dot(v1, v1);
+            float dot12 = Vector2.Dot(v1, v2);
+
+            float invDenom = 1 / ((dot00 * dot11) - (dot01 * dot01));
+            float u = ((dot11 * dot02) - (dot01 * dot12)) * invDenom;
+            float v = ((dot00 * dot12) - (dot01 * dot02)) * invDenom;
+
+            return u >= 0 && v >= 0 && u + v < 1;
+        }
+
+        /// <summary>
+        /// point가 삼각형 내부인지 검토
+        ///  http://totologic.blogspot.se/2014/01/accurate-point-in-triangle-test.html
+        /// </summary>
+        /// <param name="point"></param>
+        /// <param name="t"></param>
+        /// <param name="includeBorder"></param>
+        /// <returns></returns>
+        public static bool PisInsideTriangle(Vector2 point, Triangle2 t, bool includeBorder)
+        {
+            const float ZeroTollarance = MathUtil.ZeroTolerance;
+
+            float denominator = ((t.B.Y - t.C.Y) * (t.A.X - t.C.X)) + ((t.C.X - t.B.X) * (t.A.Y - t.C.Y));
+
+            float a = (((t.B.Y - t.C.Y) * (point.X - t.C.X)) + ((t.C.X - t.B.X) * (point.Y - t.C.Y))) / denominator;
+            float b = (((t.C.Y - t.A.Y) * (point.X - t.C.X)) + ((t.A.X - t.C.X) * (point.Y - t.C.Y))) / denominator;
+            float c = 1 - a - b;
+
+            bool isWithinTriangle = false;
+
+            if (includeBorder)
+            {
+                const float zero = 0f - ZeroTollarance;
+                const float one = 1f + ZeroTollarance;
+
+                //within or on the border
+                if (a >= zero && a <= one && b >= zero && b <= one && c >= zero && c <= one)
+                {
+                    isWithinTriangle = true;
+                }
+            }
+            else
+            {
+                const float zero = 0f + ZeroTollarance;
+                const float one = 1f - ZeroTollarance;
+
+                //within the triangle
+                if (a > zero && a < one && b > zero && b < one && c > zero && c < one)
+                {
+                    isWithinTriangle = true;
+                }
+            }
+
+            return isWithinTriangle;
+        }
+
+        // ??????????????????????????????????
+        /// <summary>
+        /// 네 점을 각각 연결하는 두 선분 (s1p1, s1p2), (s2p1, s1p2)이 서로 교차하면 true
+        /// </summary>
+        /// <param name="s1p1"></param>
+        /// <param name="s1p2"></param>
+        /// <param name="s2p1"></param>
+        /// <param name="s2p2"></param>
+        /// <returns></returns>
+        public static bool IsSegmentIntersectSegment(Vector2 s1p1, Vector2 s1p2, Vector2 s2p1, Vector2 s2p2)
+        {
+            Vector2 D0 = s1p2 - s1p1;
+            Vector2 D1 = s2p2 - s2p1;
+
+            Vector2 E = s2p1 - s1p1;
+            float cross = D0.CrossDot(D1);
+            float cross2 = cross * cross;
+            float sqrLen0 = (D0.X * D0.X) + (D0.Y * D0.Y);
+            float sqrLen1 = (D1.X * D1.X) + (D1.Y * D1.Y);
+            // parallel test
+            if (cross2 > MathUtil.ZeroTolerance * sqrLen0 * sqrLen1)
+            {
+                float s = E.CrossDot(D1) / cross;
+                if (s < 0.0)
+                {
+                    // default_nsegs s1p1 + s * DO 위에 없음
+                    return false;
+                }
+                float t = E.CrossDot(D0) / cross;
+
+                if (t < 0.0 || t > 1.0)
+                {
+                    // default_nsegs s2p1 + t * D1 위에 없음
+                    return false;
+                }
+
+                // 한 점에서 만남
+                return true;
+            }
+
+            // parallel
+            float sqrLenE = (E.X * E.X) + (E.Y * E.Y);
+            cross = E.CrossDot(D0);
+            cross2 = cross * cross;
+            if (cross2 > MathUtil.ZeroTolerance * sqrLen0 * sqrLenE)
+            {
+                // 만나지 않음
+                return false;
+            }
+            else
+            {
+                return true;
+            }
+        }
+
+        /// <summary>
+        /// p가 line (a, b) 위에 있으면 true
+        /// </summary>
+        /// <param name="point"></param>
+        /// <param name="a"></param>
+        /// <param name="b"></param>
+        /// <returns></returns>
+        public static bool Is_P_InbetweenAB(Vector2 point, Vector2 a, Vector2 b, float epsilon = MathUtil.ZeroTolerance)
+        {
+            bool ison = false;
+            Vector2 ab = b - a;
+            Vector2 ap = point - a;
+
+            if (Vector2.Dot(ab, ap) > epsilon && ab.LengthSquared >= ap.LengthSquared)
+            {
+                ison = true;
+            }
+            return ison;
+        }
+
+        /// <summary>
+        /// p가 line (a, b) 위에 있으면 true
+        /// </summary>
+        /// <param name="point"></param>
+        /// <param name="a"></param>
+        /// <param name="b"></param>
+        /// <returns></returns>
+        public static bool Is_P_InbetweenAB(Vector3 point, Vector3 a, Vector3 b, float epsilon = MathUtil.ZeroTolerance)
+        {
+            bool isBetween = false;
+            Vector3 ab = b - a;
+            Vector3 ap = point - a;
+
+            if (Vector3.Dot(ab, ap) > epsilon && ab.LengthSquared >= ap.LengthSquared)
+            {
+                isBetween = true;
+            }
+            return isBetween;
+        }
+
+        /// <summary>
+        /// point가 허용 오차 범위내에서 plane의 상부(1), 하부(-1), 동일면(0)
+        /// </summary>
+        /// <returns></returns>
+        public static bool Is_P_onPlane(Vector3 pointPos, Plane3f plane, float tolerance = MathUtil.EpsilonDistance)
+        {
+            return Math.Abs(Vector3.Dot(plane.normal, pointPos) - plane.distance) < tolerance;
+        }
+
+        /// <summary>
+        /// segment가 plane 위에 있으면 return true
+        /// </summary>
+        /// <param name="plane"></param>
+        /// <param name="tolerance"></param>
+        /// <returns></returns>
+        public static bool IsOnPlane(Segment3f seg, Plane3f plane, float tolerance = MathUtil.ZeroTolerance)
+        {
+            float f0 = Vector3.Dot(seg.P0 - plane.V0, plane.normal);
+            float f1 = Vector3.Dot(seg.P1 - plane.V0, plane.normal);
+
+            return Math.Abs(f0) < tolerance && Math.Abs(f1) < tolerance;
+        }
+
+        /// <summary>
+        /// 점 pt가 pp default_nsegs 위에 있는지 검사
+        /// </summary>
+        /// <param name="pt"></param>
+        /// <param name="pp"></param>
+        /// <returns></returns>
+        public static bool IsOnBoundary(Vector2 pt, Polygon2 pp)
+        {
+            for (int i = 0; i < pp.points.Count; i++)
+            {
+                if (Is_P_InbetweenAB(pt, pp.points[i], pp.points[(i + 1) % pp.points.Count]))
+                {
+                    return true;
+                }
+
+                if (pt == pp.points[i] || pt == pp.points[(i + 1) % pp.points.Count])
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        /// <summary>
+        /// test, other 벡터가 epsilon내에서 평행한지 검토, 평행하면 true
+        /// </summary>
+        /// <param name="test"></param>
+        /// <param name="other"></param>
+        /// <param name="eps"></param>
+        /// <returns></returns>
+        public static bool AreParallel(Vector2 test, Vector2 other, float eps = MathUtil.EpsilonAngleR)
+        {
+            //     |  i  j |
+            // det | x1 y1 | == 0, Parallel
+            //     | x2 y2 |
+            return Math.Abs((test.X * other.Y) - (test.Y * other.X)) <= eps;
+        }
+
+        public static bool AreParallel(Vector2 P0, Vector2 P1, Vector2 Q0, Vector2 Q1, float tolerance = MathUtil.EpsilonAngleR)
+        {
+            //     |  i  j  k |
+            // det | x1 y1 z1 | == 0, Parallel
+            //     | x2 y2 z3 |
+            Vector2 test = P1 - P0;
+            Vector2 other = Q1 - Q0;
+            return Math.Abs((-test.X * other.Y) + (test.Y * other.X)) <= tolerance;
+        }
+
+        /// <summary>
+        /// test, other 벡터가 epsilon내에서 평행한지 검토, 평행하면 true
+        /// </summary>
+        /// <param name="a"></param>
+        /// <param name="b"></param>
+        /// <param name="tolerance"></param>
+        /// <returns></returns>
+        public static bool AreParallel(Vector3 a, Vector3 b, float tolerance = MathUtil.EpsilonAngleR)
+        {
+            //     |  i  j  k |
+            // det | x1 y1 z1 | == 0, Parallel
+            //     | x2 y2 z3 |
+            return Math.Abs((a.Y * b.Z) - (a.Z * b.Y)
+                          + (a.Z * b.X) - (a.X * b.Z)
+                          + (a.X * b.Y) - (a.Y * b.X))
+                <= tolerance;
+        }
+
+        public static bool AreParallel(Vector3 P0, Vector3 P1, Vector3 Q0, Vector3 Q1, float tolerance = MathUtil.EpsilonAngleR)
+        {
+            Vector3 a = P1 - P0;
+            Vector3 b = Q1 - Q0;
+
+            return Math.Abs((a.Y * b.Z) - (a.Z * b.Y)
+                          + (a.Z * b.X) - (a.X * b.Z)
+                          + (a.X * b.Y) - (a.Y * b.X))
+                <= tolerance;
+        }
+
+        public static bool AreParallel(Segment2f seg, Segment2f other, float tolerance = MathUtil.EpsilonAngleR)
+        {
+            return AreParallel(seg.direction, other.direction, tolerance);
+        }
+
+        public static bool AreParallel(Segment3f seg, Segment3f other, float tolerance = MathUtil.EpsilonAngleR)
+        {
+            return AreParallel(seg.direction, other.direction, tolerance);
+        }
+
+        /// <summary>
+        /// vec이 other와 직교하는지 검토
+        /// </summary>
+        /// <param name="a"></param>
+        /// <param name="b"></param>
+        /// <param name="tolerance"></param>
+        /// <returns></returns>
+        public static bool ArePerpendicular(Vector3 a, Vector3 b, float tolerance = MathUtil.EpsilonAngleR)
+        {
+            return Math.Abs(Vector3.Dot(a, b)) < tolerance;
+        }
+
+        public static bool ArePerpendicular(Vector2 a, Vector2 b, float tolerance = MathUtil.EpsilonAngleR)
+        {
+            return Math.Abs(Vector2.Dot(a, b)) < tolerance;
+        }
+
+        /// <summary>
+        /// convex 사각형인지 test
+        /// https://stackoverflow.com/questions/2122305/convex-hull-of-4-ControlPoints
+        /// </summary>
+        /// <param name="a"></param>
+        /// <param name="b"></param>
+        /// <param name="c"></param>
+        /// <param name="d"></param>
+        /// <returns></returns>
+        public static bool IsQuadrilateralConvex(Vector2 a, Vector2 b, Vector2 c, Vector2 d)
+        {
+            bool abc = IsCCW(a, b, c);
+            bool abd = IsCCW(a, b, d);
+            bool bcd = IsCCW(b, c, d);
+            bool cad = IsCCW(c, a, d);
+
+            if (abc && abd && bcd && !cad)
+            {
+                return true;
+            }
+            else if (abc && abd && !bcd && cad)
+            {
+                return true;
+            }
+            else if (abc && !abd && bcd && cad)
+            {
+                return true;
+            }
+            else if (!abc && !abd && !bcd && cad)
+            {
+                return true;
+            }
+            else if (!abc && !abd && bcd && !cad)
+            {
+                return true;
+            }
+            else if (!abc && abd && !bcd && !cad)
+            {
+                return true;
+            }
+            return false;
+        }
+
+        public static bool IsPointClippedByPlane(Vector3 p, Plane3f plane, float tolrerance = MathUtil.ZeroTolerance)
+        {
+            //Segment3f newseg = new Segment3f();
+            // default_nsegs 의 P0, P1이 plane의 어느쪽에 있는지 검사
+            int ip0 = GetPointRelationToPlane(p, plane, tolrerance);
+
+            // 선분 전체 clip : 두점 모두 plane의 positive side 혹은 plane 위에 존재
+            return ip0 == 0 || ip0 == 1;
+        }
+
+        public static bool IsSegmentClippedByPlane(Segment3f s, Plane3f plane, float tolrerance = MathUtil.ZeroTolerance)
+        {
+            //Segment3f newseg = new Segment3f();
+            // default_nsegs 의 P0, P1이 plane의 어느쪽에 있는지 검사
+            int ip0 = GetPointRelationToPlane(s.P0, plane, tolrerance);
+            int ip1 = GetPointRelationToPlane(s.P1, plane, tolrerance);
+
+            // 선분 전체 clip : 두점 모두 plane의 positive side 혹은 plane 위에 존재
+            if ((ip0 == 0 && ip1 == 0) ||
+                (ip0 == 0 && ip1 == 1) ||
+                (ip0 == 1 && ip1 == 0) ||
+                (ip0 == 1 && ip1 == 1))
+            {
+                return true;
+            }
+
+            // clip할 선분 없음 : 한점은 plane면 위에 다른 한 점은 negative side에 존재
+            return (ip0 != -1 || ip1 != 0) &&
+                (ip0 != 0 || ip1 != -1)
+                && false;
+        }
+
+        public static Vector2 MovePointAlongVector(Vector2 point, Vector2 direction, float distance)
+        {
+            return point + (direction * distance);
+        }
+
+        public static Vector3 MovePointAlongVector(Vector3 point, Vector3 direction, float distance)
+        {
+            return point + (direction * distance);
+        }
+
+        /// <summary>
+        /// GLVertex norID 방향으로 dist 값만큼 Offest
+        /// </summary>
+        /// <param name="dist"></param>
+        /// <param name="bUseFaceAvg">face 평균 적용, default = 미적용</param>
+        public static void OffsetDistanceNormal(List<Vector2> points, float dist, bool bUseFaceAvg = false)
+        {
+            Vector2[] newv = new Vector2[points.Count];
+            if (bUseFaceAvg)
+            {
+                for (int k = 0; k < points.Count; ++k)
+                {
+                    newv[k] = points[k] + (dist * GetNormalFaceAvg(points, k));
+                }
+            }
+            else
+            {
+                for (int k = 0; k < points.Count; ++k)
+                {
+                    newv[k] = points[k] + (dist * GetNormal(points, k));
+                }
+            }
+            for (int k = 0; k < points.Count; ++k)
+            {
+                points[k] = newv[k];
+            }
+        }
+
+        public static List<Triangle2> GetCCWTriangles(List<Triangle2> triangles)
+        {
+            List<Triangle2> trianglesList = new(triangles);
+
+            for (int i = 0; i < trianglesList.Count; i++)
+            {
+                Triangle2 t = trianglesList[i];
+                if (!IsCCW(t.A, t.B, t.C))
+                {
+                    t.ChangeOrientation();
+                    trianglesList[i] = t;
+                }
+            }
+
+            triangles = new List<Triangle2>(trianglesList);
+
+            return triangles;
+        }
+
+        /// <summary>
+        /// 세 점 p0ID, p1ID, p3가 이루는 평면의 norID vector
+        /// </summary>
+        /// <param name="p1"></param>
+        /// <param name="p2"></param>
+        /// <param name="p3"></param>
+        /// <param name="shouldNormalize"></param>
+        /// <returns></returns>
+        public static Vector3 GetCrossProduct(Vector3 p1, Vector3 p2, Vector3 p3, bool shouldNormalize = true)
+        {
+            Vector3 normal = Vector3.Cross(p3 - p2, p1 - p2);
+            if (shouldNormalize)
+            {
+                normal = Vector3.Normalize(normal);
+            }
+            return normal;
+        }
+
+        /// <summary>
+        /// 점 i 의 단위 법선 vector 계산
+        /// </summary>
+        /// <param name="i"></param>
+        /// <returns>unit tengent vector</returns>
+        public static Vector2 GetTangent(List<Vector2> points, int i)
+        {
+            Vector2 next = points[(i + 1) % points.Count];
+            Vector2 prev = points[i == 0 ? points.Count - 1 : i - 1];
+            return Vector2.Normalize(next - prev);
+        }
+
+        /// <summary>
+        /// 점 i 의 단위 norID vector 계산
+        /// </summary>
+        /// <param name="i"></param>
+        /// <returns>unit norID vector</returns>
+        public static Vector2 GetNormal(List<Vector2> points, int i)
+        {
+            return GetTangent(points, i).Perp();
+        }
+
+        private static Vector2 GetNormalFaceAvg(List<Vector2> points, int i)
+        {
+            Vector2 next = points[(i + 1) % points.Count];
+            Vector2 prev = points[i == 0 ? points.Count - 1 : i - 1];
+            next -= points[i]; next = Vector2.Normalize(next);
+            prev -= points[i]; prev = Vector2.Normalize(prev);
+
+            Vector2 n = next.Perp() - prev.Perp();
+            float len = Vector2.Normalize(next).Length;
+            if (len == 0)
+            {
+                return Vector2.Normalize(next + prev);// ed;
+            }
+            else
+            {
+                return n;
+            }
+        }
+
+        /// <summary>
+        /// CCW 방향 V0id, Vertex0, V2으로 구성된 삼각형의 외접원에 대해 test 점의 위상
+        /// </summary>
+        /// <param name="point">test할 점의 좌표</param>
+        /// <param name="v0">삼각형 구성 point 1의 index</param>
+        /// <param name="v1">삼각형 구성 point 2의 index</param>
+        /// <param name="v2">삼각형 구성 point 3의 index</param>
+        /// <returns>
+        ///   +1, outside circumcircle of triangle
+        ///   -1, inside circumcircle of triangle
+        ///    0, on circumcircle of triangle
+        /// </returns>
+        public static int GetPointRelationToCircumcircle(ref Vector2 point, ref Vector2 v0, ref Vector2 v1, ref Vector2 v2)
+        {
+            float s0x = v0.X + point.X;
+            float d0x = v0.X - point.X;
+            float s0y = v0.Y + point.Y;
+            float d0y = v0.Y - point.Y;
+            float s1x = v1.X + point.X;
+            float d1x = v1.X - point.X;
+            float s1y = v1.Y + point.Y;
+            float d1y = v1.Y - point.Y;
+            float s2x = v2.X + point.X;
+            float d2x = v2.X - point.X;
+            float s2y = v2.Y + point.Y;
+            float d2y = v2.Y - point.Y;
+            float z0 = (s0x * d0x) + (s0y * d0y);
+            float z1 = (s1x * d1x) + (s1y * d1y);
+            float z2 = (s2x * d2x) + (s2y * d2y);
+
+            float det = Det3(d0x, d0y, z0, d1x, d1y, z1, d2x, d2y, z2);
+
+            return det < 0f ? 1 : det > 0f ? -1 : 0;
+        }
+
+        /// <summary>
+        /// 정점 v0, v1, v2, v3로 구성된 사면체의 외접 구에 대한 점 i의 위상
+        /// </summary>
+        /// <param name="point">test할 정점의 좌표</param>
+        /// <param name="v0">사면체의 정점 1</param>
+        /// <param name="v1">사면체의 정점 2</param>
+        /// <param name="v2">사면체의 정점 3</param>
+        /// <param name="v3">사면체의 정점 4</param>
+        /// <returns>
+        ///  +1, P outside circumsphere of tetrahedron
+        ///  -1, P inside circumsphere of tetrahedron
+        ///   0, P on circumsphere of tetrahedron
+        /// </returns>
+        public static int GetPointRelationToCircumsphere(Vector3 point, ref Vector3 v0, ref Vector3 v1, ref Vector3 v2, ref Vector3 v3)
+        {
+            float x0 = v0[0] - point[0];
+            float y0 = v0[1] - point[1];
+            float z0 = v0[2] - point[2];
+            float s00 = v0[0] + point[0];
+            float s01 = v0[1] + point[1];
+            float s02 = v0[2] + point[2];
+            float t00 = s00 * x0;
+            float t01 = s01 * y0;
+            float t02 = s02 * z0;
+            float t00pt01 = t00 + t01;
+            float w0 = t00pt01 + t02;
+
+            float x1 = v1[0] - point[0];
+            float y1 = v1[1] - point[1];
+            float z1 = v1[2] - point[2];
+            float s10 = v1[0] + point[0];
+            float s11 = v1[1] + point[1];
+            float s12 = v1[2] + point[2];
+            float t10 = s10 * x1;
+            float t11 = s11 * y1;
+            float t12 = s12 * z1;
+            float t10pt11 = t10 + t11;
+            float w1 = t10pt11 + t12;
+
+            float x2 = v2[0] - point[0];
+            float y2 = v2[1] - point[1];
+            float z2 = v2[2] - point[2];
+            float s20 = v2[0] + point[0];
+            float s21 = v2[1] + point[1];
+            float s22 = v2[2] + point[2];
+            float t20 = s20 * x2;
+            float t21 = s21 * y2;
+            float t22 = s22 * z2;
+            float t20pt21 = t20 + t21;
+            float w2 = t20pt21 + t22;
+
+            float x3 = v3[0] - point[0];
+            float y3 = v3[1] - point[1];
+            float z3 = v3[2] - point[2];
+            float s30 = v3[0] + point[0];
+            float s31 = v3[1] + point[1];
+            float s32 = v3[2] + point[2];
+            float t30 = s30 * x3;
+            float t31 = s31 * y3;
+            float t32 = s32 * z3;
+            float t30pt31 = t30 + t31;
+            float w3 = t30pt31 + t32;
+
+            float x0y1 = x0 * y1;
+            float x0y2 = x0 * y2;
+            float x0y3 = x0 * y3;
+            float x1y0 = x1 * y0;
+            float x1y2 = x1 * y2;
+            float x1y3 = x1 * y3;
+            float x2y0 = x2 * y0;
+            float x2y1 = x2 * y1;
+            float x2y3 = x2 * y3;
+            float x3y0 = x3 * y0;
+            float x3y1 = x3 * y1;
+            float x3y2 = x3 * y2;
+            float a0 = x0y1 - x1y0;
+            float a1 = x0y2 - x2y0;
+            float a2 = x0y3 - x3y0;
+            float a3 = x1y2 - x2y1;
+            float a4 = x1y3 - x3y1;
+            float a5 = x2y3 - x3y2;
+
+            float z0w1 = z0 * w1;
+            float z0w2 = z0 * w2;
+            float z0w3 = z0 * w3;
+            float z1w0 = z1 * w0;
+            float z1w2 = z1 * w2;
+            float z1w3 = z1 * w3;
+            float z2w0 = z2 * w0;
+            float z2w1 = z2 * w1;
+            float z2w3 = z2 * w3;
+            float z3w0 = z3 * w0;
+            float z3w1 = z3 * w1;
+            float z3w2 = z3 * w2;
+            float b0 = z0w1 - z1w0;
+            float b1 = z0w2 - z2w0;
+            float b2 = z0w3 - z3w0;
+            float b3 = z1w2 - z2w1;
+            float b4 = z1w3 - z3w1;
+            float b5 = z2w3 - z3w2;
+            float a0b5 = a0 * b5;
+            float a1b4 = a1 * b4;
+            float a2b3 = a2 * b3;
+            float a3b2 = a3 * b2;
+            float a4b1 = a4 * b1;
+            float a5b0 = a5 * b0;
+            float term0 = a0b5 - a1b4;
+            float term1 = term0 + a2b3;
+            float term2 = term1 + a3b2;
+            float term3 = term2 - a4b1;
+            float det = term3 + a5b0;
+            const float zero = 0F;
+
+            return det > zero ? 1 : det < zero ? -1 : 0;
+        }
+
+        /// <summary>
+        /// 직선 (V0id, Vertex0) 에 대한 점 P의 위상
+        /// </summary>
+        /// <param name="point">test점 좌표</param>
+        /// <param name="v0">직선 시작점 좌표</param>
+        /// <param name="v1">직선 시작점 좌표</param>
+        /// <param name="order">
+        /// 계산 결과 order =
+        ///   -3, P not collinear
+        ///   -2, P strictly left of V0id on the line
+        ///   -1, P = V0id
+        ///    0, P on line default_nsegs [V0id,Vertex0]
+        ///   +1, P = Vertex0
+        ///   +2, P strictly right of V0id on the line
+        /// eps = 허용 오차, 거리가 ( -eps ~ +eps )사이이면 on line
+        /// </param>
+        /// <returns>
+        /// 함수의 return 값
+        ///  +1, P on right of line
+        ///  -1, P on left of line
+        ///   0, P on the line
+        /// </returns>
+        public static int GetPointRelationToLine(ref Vector2 point, ref Vector2 v0, ref Vector2 v1, ref int order, float eps = 0f)
+        {
+            float x0 = point[0] - v0[0];
+            float y0 = point[1] - v0[1];
+            float x1 = v1[0] - v0[0];
+            float y1 = v1[1] - v0[1];
+            float x0y1 = x0 * y1;
+            float x1y0 = x1 * y0;
+            float det = x0y1 - x1y0;
+
+            if (det > eps)
+            {
+                order = +3;
+                return -1;
+            }
+
+            if (det < eps)
+            {
+                order = -3;
+                return +1;
+            }
+
+            float x0x1 = x0 * x1;
+            float y0y1 = y0 * y1;
+            float dot = x0x1 + y0y1;
+            if (dot == eps)
+            {
+                order = -1;
+            }
+            else if (dot < eps)
+            {
+                order = -2;
+            }
+            else
+            {
+                float x0x0 = x0 * x0;
+                float y0y0 = y0 * y0;
+                float sqrLength = x0x0 + y0y0;
+                if (dot == sqrLength)
+                {
+                    order = +1;
+                }
+                else if (dot > sqrLength)
+                {
+                    order = +2;
+                }
+                else
+                {
+                    order = 0;
+                }
+            }
+
+            return 0;
+        }
+
+        /// <summary>
+        /// test 점이 Q0와 Q1을 잇는 선과 이루는 위상
+        /// </summary>
+        /// <param name="point">test point</param>
+        /// <param name="Q0">직선 시작점</param>
+        /// <param name="Q1">직선 끝점</param>
+        /// <returns>
+        ///  Q0_EQUALS_Q1     : 직선의 두 점이 같음
+        ///  P_EQUALS_Q0      : P = Q0
+        ///  P_EQUALS_Q1      : P = Q1
+        ///  LookForward             : P는 (Q0, Q1)의 좌측
+        ///  LookAfter            : P는 (Q0, Q1)의 우측
+        ///  COLINEARPOSITIVE : colinear, line ordering is <Q0,Q1, P>
+        ///  COLINEARNEGATIVE : colinear, line ordering is <P ,Q0,Q1>
+        ///  COLINEAR_BETWEEN : colinear, line ordering is <Q0, p,Q1>
+        /// </returns>
+        public static OrderType GetPointRelationToLineExtended(ref Vector2 point, ref Vector2 Q0, ref Vector2 Q1)
+        {
+            const float zero = 0f;
+            float x0 = Q1[0] - Q0[0];
+            float y0 = Q1[1] - Q0[1];
+            if (x0 == zero && y0 == zero)
+            {
+                return OrderType.Q0_EQUALS_Q1;
+            }
+
+            float x1 = point[0] - Q0[0];
+            float y1 = point[1] - Q0[1];
+            if (x1 == zero && y1 == zero)
+            {
+                return OrderType.P_EQUALS_Q0;
+            }
+
+            float x2 = point[0] - Q1[0];
+            float y2 = point[1] - Q1[1];
+            if (x2 == zero && y2 == zero)
+            {
+                return OrderType.P_EQUALS_Q1;
+            }
+
+            float x0y1 = x0 * y1;
+            float x1y0 = x1 * y0;
+            float det = x0y1 - x1y0;
+
+            if (det != zero)
+            {
+                if (det > zero)
+                {
+                    // CCW triangle <P,Q0,Q1>.
+                    return OrderType.LEFT;
+                }
+                else
+                {
+                    //CW triangle <P,Q1,Q0>.
+                    return OrderType.RIGHT;
+                }
+            }
+            else
+            {
+                // collinear; P is on the line through Q0 and Q1.
+                float x0x1 = x0 * x1;
+                float y0y1 = y0 * y1;
+                float dot = x0x1 + y0y1;
+                if (dot < zero)
+                {
+                    // The line ordering is <P,Q0,Q1>.
+                    return OrderType.COLINEAR_NEGATIVE;
+                }
+
+                float x0x0 = x0 * x0;
+                float y0y0 = y0 * y0;
+                float sqrLength = x0x0 + y0y0;
+                if (dot > sqrLength)
+                {
+                    // The line ordering is <Q0,Q1,P>.
+                    return OrderType.COLINEAR_POSITIVE;
+                }
+
+                // line ordering is <Q0,P,Q1> with P strictly between Q0 and Q1.
+                return OrderType.COLINEAR_BETWEEN;
+            }
+        }
+
+        /// <summary>
+        /// 정점 v0, v1, v2로 구성된 면에 대한 점 test의 위상
+        /// </summary>
+        /// <param name="point">test할 정점의 좌표</param>
+        /// <param name="v0">면을 형성할 정점 1</param>
+        /// <param name="v1">면을 형성할 정점 2</param>
+        /// <param name="v2">면을 형성할 정점 3</param>
+        /// <returns>
+        ///   +1, P on positive side of plane (side to which N ControlPoints)
+        ///   -1, P on negative side of plane (side to which -N ControlPoints)
+        ///    0, P on the plane
+        /// </returns>
+        public static int GetPointRelationToPlane(Vector3 point, ref Vector3 v0, ref Vector3 v1, ref Vector3 v2, float eps = MathUtil.EpsilonDistance)
+        {
+            float x0 = point[0] - v0[0];
+            float y0 = point[1] - v0[1];
+            float z0 = point[2] - v0[2];
+            float x1 = v1[0] - v0[0];
+            float y1 = v1[1] - v0[1];
+            float z1 = v1[2] - v0[2];
+            float x2 = v2[0] - v0[0];
+            float y2 = v2[1] - v0[1];
+            float z2 = v2[2] - v0[2];
+
+            float y1z2 = y1 * z2;
+            float y2z1 = y2 * z1;
+            float y2z0 = y2 * z0;
+            float y0z2 = y0 * z2;
+            float y0z1 = y0 * z1;
+            float y1z0 = y1 * z0;
+
+            float c0 = y1z2 - y2z1;
+            float c1 = y2z0 - y0z2;
+            float c2 = y0z1 - y1z0;
+            float x0c0 = x0 * c0;
+            float x1c1 = x1 * c1;
+            float x2c2 = x2 * c2;
+            float term = x0c0 + x1c1;
+            float det = term + x2c2;
+            float zero = eps;
+
+            return det > zero ? +1 : det < zero ? -1 : 0;
+        }
+
+        public static int GetPointRelationToPlane(Vector3 point, Plane3f plane, float eps = MathUtil.ZeroTolerance)
+        {
+            float det = Vector3.Dot(point - plane.V0, plane.normal);
+            return det > eps ? +1 : det < eps ? -1 : 0;
+        }
+
+        /// <summary>
+        /// 점 V0id, Vertex0, V2로 구성된 삼각형에 대한 test 점의 위상
+        /// V0id, v1, v2는 반드시 CCW로 정렬되어 있어야 함
+        /// </summary>
+        /// <param name="point">test할 점</param>
+        /// <param name="v0">삼각형 구성 point 1의 index</param>
+        /// <param name="v1">삼각형 구성 point 2의 index</param>
+        /// <param name="v2">삼각형 구성 point 3의 index</param>
+        /// <returns>
+        ///   +1, outside triangle
+        ///   -1, inside triangle
+        ///    0, on triangle
+        /// </returns>
+        public static int GetPointRelationToTriangle(ref Vector2 point, ref Vector2 v0, ref Vector2 v1, ref Vector2 v2, float eps = 0f)
+        {
+            int order = 0;
+
+            int sign0 = GetPointRelationToLine(ref point, ref v0, ref v1, ref order, eps);
+            if (sign0 > eps)
+            {
+                return +1;
+            }
+
+            int sign1 = GetPointRelationToLine(ref point, ref v1, ref v2, ref order, eps);
+            if (sign1 > eps)
+            {
+                return +1;
+            }
+
+            int sign2 = GetPointRelationToLine(ref point, ref v2, ref v0, ref order, eps);
+            return sign2 > eps ? +1 : sign0 != 0 && sign1 != 0 && sign2 != 0 ? -1 : 0;
+        }
+
+        /// <summary>
+        /// 정점 v0, v1, v2, v3로 구성된 사면체에 대한 점 test의 위상
+        /// </summary>
+        /// <param name="test">test할 점의 좌표</param>
+        /// <param name="v0">사면체의 정점 1</param>
+        /// <param name="v1">사면체의 정점 2</param>
+        /// <param name="v2">사면체의 정점 3</param>
+        /// <param name="v3">사면체의 정점 4</param>
+        /// <returns>
+        ///  +1, P outside tetrahedron
+        ///  -1, P inside tetrahedron
+        ///   0, P on tetrahedron
+        /// </returns>
+        public static int GetPointRelationToTetrahedron(Vector3 test, ref Vector3 v0, ref Vector3 v1, ref Vector3 v2, ref Vector3 v3, float eps = MathUtil.ZeroTolerance)
+        {
+            int sign0 = GetPointRelationToPlane(test, ref v1, ref v2, ref v3, eps);
+            if (sign0 > 0)
+            {
+                return +1;
+            }
+
+            int sign1 = GetPointRelationToPlane(test, ref v0, ref v2, ref v3, eps);
+            if (sign1 < 0)
+            {
+                return +1;
+            }
+
+            int sign2 = GetPointRelationToPlane(test, ref v0, ref v1, ref v3, eps);
+            if (sign2 > 0)
+            {
+                return +1;
+            }
+
+            int sign3 = GetPointRelationToPlane(test, ref v0, ref v1, ref v2, eps);
+            return sign3 < 0 ? +1 : sign0 != 0 && sign1 != 0 && sign2 != 0 && sign3 != 0 ? -1 : 0;
+        }
+
+        /// <summary>
+        /// point가 점 a, b를 연결하는 벡터 기준 어디에 있는지 계산
+        /// </summary>
+        /// <param name="point"></param>
+        /// <param name="a"></param>
+        /// <param name="b"></param>
+        /// <returns>
+        /// < 0 -> right
+        /// = 0 -> line, colinear
+        /// > 0 -> left
+        /// </returns>
+        public static float GetPointRelationToVectorAB(Vector2 point, Vector2 a, Vector2 b)
+        {
+            float determinant = ((a.X - point.X) * (b.Y - point.Y)) - ((a.Y - point.Y) * (b.X - point.X));
+            return determinant;
+        }
+
+        /// <summary>
+        /// 모든 점들을 내포하는 Supertriangle 생성
+        /// </summary>
+        /// <param name="points"></param>
+        /// <returns></returns>
+        public static Triangle2 SuperTriangleOfPoints(List<Vector2> points)
+        {
+            //Step 1. Create an AssemblyAABB
+            AABB2 aabb = new(new List<Vector2>(points));
+
+            Vector2 TL = new(aabb.Min.X, aabb.Max.Y);
+            Vector2 TR = new(aabb.Max.X, aabb.Max.Y);
+            Vector2 BR = new(aabb.Max.X, aabb.Min.Y);
+
+            //Step2.AABB를 둘러싸는 최소원
+            Vector2 circleCenter = (TL + BR) * 0.5f;
+
+            float circleRadius = (circleCenter - TR).Length;
+
+            //Step 3. 최소원을 내포하는 삼각형
+            float halfSideLenghth = circleRadius / (float)Math.Tan(30f * MathUtil.Deg2Rad);
+
+            // bottom edge의 중심
+            Vector2 t_B = new(circleCenter.X, circleCenter.Y - circleRadius);
+
+            Vector2 t_BL = new(t_B.X - halfSideLenghth, t_B.Y);
+            Vector2 t_BR = new(t_B.X + halfSideLenghth, t_B.Y);
+
+            // bottom edge에 상응하는 삼각형의 정점까지 높이
+            float triangleHeight = halfSideLenghth * (float)Math.Tan(60f * MathUtil.Deg2Rad);
+
+            Vector2 t_T = new(circleCenter.X, t_B.Y + triangleHeight);
+
+            // 최종 삼각형 완성
+            Triangle2 superTriangle = new(t_BR, t_BL, t_T);
+
+            return superTriangle;
+        }
+
+        public static float OrthogonalComplement(int numInputs, ref Vector2[] v, bool robust = false)
+        {
+            if (numInputs == 1)
+            {
+                v[1] = -v[0].Perp();
+                return Orthonormalize(2, ref v, robust);
+            }
+
+            return 0f;
+        }
+
+        // Gram-Schmidt orthonormalization 방법으로 선형 독립인 벡터로부터 정규 직교 벡터 생성
+        // 정규화 과정 진행중 비정규화된 벡터의 가장짧은 길이를 리턴
+        // 길이가 '0'에 가까우면, 입력값들이 선형적으로 종속적일 가능성이 있어서 계산 오류발생 가능 
+        // numElements는 1보다 크거나 같고 벡터의 차원 N 보다 작거나 같아야함
+        static float Orthonormalize(int numInputs, ref Vector2[] v, bool robust = false)
+        {
+            if (v != null && 1 <= numInputs && numInputs <= 2)
+            {
+                float minLength = NormalizeVectorComponent(v[0], robust);
+                for (int i = 1; i < numInputs; ++i)
+                {
+                    for (int j = 0; j < i; ++j)
+                    {
+                        float dot = Vector2.Dot(v[i], v[j]);
+                        v[i] -= v[j] * dot;
+                    }
+                    float length = NormalizeVectorComponent(v[i], robust);
+                    if (length < minLength)
+                    {
+                        minLength = length;
+                    }
+                }
+                return minLength;
+            }
+
+            return 0f;
+        }
+
+        /// <summary>
+        /// 차원 감소 N --> N-1
+        /// </summary>
+        /// <param name="v"></param>
+        /// <returns></returns>
+        public static Vector2 DownDimension(ref Vector3 v)
+        {
+            Vector2 result = new();
+            for (int i = 0; i < 3 - 1; ++i)
+            {
+                result[i] = v[i];
+            }
+            return result;
+        }
+
+        /// <summary>
+        /// v의 reject 번째 component를 제거하고 vector차원을 N-1로 내림
+        /// </summary>
+        /// <param name="v"></param>
+        /// <param name="reject"></param>
+        /// <returns></returns>
+        public static Vector2 DownDimension(Vector3 v, int reject)
+        {
+            Vector2 result = new();
+            for (int i = 0, j = 0; i < 2; ++i, ++j)
+            {
+                if (j == reject)
+                {
+                    ++j;
+                }
+                result[i] = v[j];
+            }
+            return result;
+        }
+
+        /// <summary>
+        /// v의 특정 inject번째 component를 value로 insert하고 차원을 승급
+        /// </summary>
+        /// <param name="v"></param>
+        /// <param name="value"></param>
+        /// <param name="inject"></param>
+        /// <returns></returns>
+        public static Vector3 LiftDimension(Vector2 v, float value, int inject)
+        {
+            Vector3 res = new();
+
+            res[inject] = value;
+            res[(inject + 1) % 3] = v[0];
+            res[(inject + 2) % 3] = v[1];
+
+            return res;
+        }
+
+        /// <summary>
+        /// 차원 상승 N --> N+1 with N+1
+        /// </summary>
+        /// <param name="v"></param>
+        /// <param name="last"></param>
+        /// <returns></returns>
+        public static Vector3 LiftDimension(Vector2 v, float last)
+        {
+            Vector3 result = new();
+            for (int i = 0; i < 2; ++i)
+            {
+                result[i] = v[i];
+            }
+            result[2] = last;
+            return result;
+        }
+
+        /// <summary>
+        /// 그람슈미트 정규화를 위해 벡터 요소중 가장 큰 값을 기준으로 다른 요소 값들을 normalize
+        /// </summary>
+        /// <param name="v"></param>
+        /// <param name="robust"></param>
+        /// <returns></returns>
+        static float NormalizeVectorComponent(Vector2 v, bool robust = false)
+        {
+            Vector2 abs = v.Abs();
+            if (robust)
+            {
+                float maxAbsComp = abs.X > abs.Y ? abs.X : abs.Y;
+                float length;
+                if (maxAbsComp > 0f)
+                {
+                    v /= maxAbsComp;
+                    length = (float)Math.Sqrt(Vector2.Dot(v, v));
+                    length *= maxAbsComp;
+                }
+                else
+                {
+                    length = 0f;
+                    for (int i = 0; i < 2; ++i)
+                    {
+                        v[i] = 0f;
+                    }
+                }
+                return length;
+            }
+            else
+            {
+                float length = (float)Math.Sqrt(Vector2.Dot(v, v));
+                if (length > 0f)
+                {
+                    //v /= length;
+                }
+                else
+                {
+                    for (int i = 0; i < 2; ++i)
+                    {
+                        v[i] = 0f;
+                    }
+                }
+                return length;
+            }
+        }
+
+        public static Vector3 ProjectPointTo(Vector3 point, Line3f line)
+        {
+            float t = Vector3.Dot(point - line.origin, line.direction);
+            return line.origin + (t * line.direction);
+        }
+
+        public static Vector3 ProjectPointTo(Vector3 point, Segment3f seg)
+        {
+            float t = Vector3.Dot(point - seg.center, seg.direction);
+            return seg.center + (t * seg.direction);
+        }
+
+        public static Vector3 ProjectPointTo(Vector3 point, Vector3 normal)
+        {
+            return normal * Vector3.Dot(normal, point);
+        }
+
+        public static Vector3 ProjectPointTo(Vector3 point, Plane3f plane)
+        {
+            Vector3 origin = plane.normal * plane.distance;
+            Vector3 temp = new(plane.normal);
+            return point - Vector3.Cross(temp, Vector3.Cross(point - origin, temp));
+        }
+
+        public static Vector3 ProjectPointTo(Vector3 P, Vector3 planeBase, Vector3 planeNormal)
+        {
+            Vector3 temp = new(planeNormal);
+            return P - Vector3.Cross(temp, Vector3.Cross(P - planeBase, temp) / temp.LengthSquared);
+        }
+
+        /// <summary>
+        /// vector를 반시계 방향으로 90도 회전
+        /// </summary>
+        /// <param name="vec"></param>
+        /// <returns></returns>
+        public static Vector2 TurnLeft(Vector2 vec)
+        {
+            return new Vector2(-vec.Y, vec.X);
+        }
+
+        /// <summary>
+        /// vector를 반시계 방향으로 dAng 만큼 회전
+        /// </summary>
+        /// <param name="vec"></param>
+        /// <param name="dAng"></param>
+        /// <returns></returns>
+        public static Vector2 TurnLeft(Vector2 vec, float dAng)
+        {
+            float temp = vec.X;
+
+            return new Vector2
+                (
+                    (float)((Math.Cos(dAng) * vec.X) - (Math.Sin(dAng) * vec.Y)),
+                    (float)((Math.Sin(dAng) * temp) + (Math.Cos(dAng) * vec.Y))
+                );
+        }
+
+        /// <summary>
+        /// vector를 시계 방향으로 90도 회전
+        /// </summary>
+        /// <param name="vec"></param>
+        /// <returns></returns>
+        public static Vector2 TurnRight(Vector2 vec)
+        {
+            return new Vector2(vec.Y, -vec.X);
+        }
+
+        /// <summary>
+        /// vector를 시계 방향으로 dAng만큼 회전
+        /// </summary>
+        /// <param name="vec"></param>
+        /// <param name="dAng"></param>
+        /// <returns></returns>
+        public static Vector2 TurnRight(Vector2 vec, float dAng)
+        {
+            return TurnLeft(vec, MathUtil.TwoPi - dAng);
+        }
+
+        /// <summary>
+        /// this vector를 Point 을 중심으로 dAng만큼 오른손 방향으로 회전
+        /// </summary>
+        /// <param name="origin">회전중심</param>
+        /// <param name="dAng">회전각 Radian</param>
+        public static Vector2 TurnRight(Vector2 vec, Vector2 origin, float dAng)
+        {
+            Vector2 vector = origin + vec;
+            vector.TurnRight(dAng);
+
+            return new Vector2(vec.X = origin.X + vector.X, vec.Y = origin.Y + vector.Y);
+        }
+
+        /// <summary>
+        /// List의 두 값을 상호 교환
+        /// </summary>
+        /// <typeparam name="T"></typeparam>
+        /// <param name="list"></param>
+        /// <param name="index1"></param>
+        /// <param name="index2"></param>
+        public static void Swap<T>(this List<T> list, int index1, int index2)
+        {
+            (list[index2], list[index1]) = (list[index1], list[index2]);
+        }
+
+        /// <summary>
+        /// 2D vector의 cross product
+        /// </summary>
+        /// <param name="x0"></param>
+        /// <param name="y0"></param>
+        /// <param name="x1"></param>
+        /// <param name="y1"></param>
+        /// <returns></returns>
+        public static float Det2(float x0, float y0, float x1, float y1)
+        {
+            return (x0 * y1) - (x1 * y0);
+        }
+
+        public static float Det3(float x0, float y0, float z0, float x1, float y1, float z1, float x2, float y2, float z2)
+        {
+            float c00 = (y1 * z2) - (y2 * z1);
+            float c01 = (y2 * z0) - (y0 * z2);
+            float c02 = (y0 * z1) - (y1 * z0);
+            return (x0 * c00) + (x1 * c01) + (x2 * c02);
+        }
+
+        /// <summary>
+        /// Dot product
+        /// </summary>
+        /// <param name="x0">point0.x</param>
+        /// <param name="y0">point0.y</param>
+        /// <param name="x1">point1.x</param>
+        /// <param name="y1">point1.y</param>
+        /// <returns></returns>
+        public static float Dot(float x0, float y0, float x1, float y1)
+        {
+            return (x0 * x1) + (y0 * y1);
+        }
+
+        /// <summary>
+        /// Crossing Number 계산
+        /// </summary>
+        /// <param name="P"></param>
+        /// <returns>0 = outside, 1 = inside</returns>
+        public static bool CrossingNumber(List<Vector2> points, Vector2 P)//, float eps = MathUtil.Epsilon)
+        {
+            int cn = 0;    // 교차점 counter
+            int n = points.Count;
+
+            for (int i = 0; i < n; i++)
+            {
+                if ((points[i].Y <= P.Y && points[(i + 1) % n].Y > P.Y)  // 상향 벡터와 cross
+                 || (points[i].Y > P.Y && points[(i + 1) % n].Y <= P.Y)) // 하향 벡터와 cross
+                {
+                    float vt = (P.Y - points[i].Y) / (points[(i + 1) % n].Y - points[i].Y);
+
+                    if (P.X < points[i].X + (vt * (points[(i + 1) % n].X - points[i].X))) // P.x < intersect
+                    {
+                        ++cn;
+                    }
+                }
+            }
+            return cn % 2 == 1;    // 0 if even (out), and 1 if  odd (in)
+        }
+
+        /// <summary>
+        /// 점 P를 polygon이 몇번 들러싸고 있는지 회전 각도로 검사
+        /// </summary>
+        /// <param name="P"></param>
+        /// <returns></returns>
+        public static float WindingIntegral(List<Vector2> points, Vector2 P)
+        {
+            float sum = 0;
+            int N = points.Count;
+            Vector2 a = points[0] - P;
+            Vector2 b;//= Vector2f.Zero;
+
+            for (int i = 0; i < N; ++i)
+            {
+                b = points[(i + 1) % N] - P;
+                sum += (float)Math.Atan2((a.X * b.Y) - (a.Y * b.X), (a.X * b.X) + (a.Y * b.Y));
+                a = b;
+            }
+            return sum / MathUtil.TwoPi;
+        }
+
+        /// <summary>
+        /// 점이 다각형 내에 존재하면 true, 다각형의 선분 위에 있어도 포함되는 것으로 간주
+        /// fast winding-number 계산 방식
+        /// https://en.wikipedia.org/wiki/Winding_number
+        /// https://www.dgp.toronto.edu/projects/fast-winding-numbers/
+        /// winding number test
+        /// </summary>
+        /// <param name="P"></param>
+        /// <returns>winding number, 0이면 바깥에 있음</returns>
+        public static bool WindingNumber(List<Vector2> points, Vector2 P)//, float eps = 0f)
+        {
+            int wn = 0;    // the  winding number counter
+            int n = points.Count;
+            const float eps = 0;
+
+            for (int i = 0; i < n; i++)
+            {
+                if (points[i].Y <= P.Y + eps)
+                {
+                    if (points[(i + 1) % n].Y + eps > P.Y) // 위 방향 벡터 crossing
+                    {
+                        if (GetPointRelationToVectorAB(P, points[i], points[(i + 1) % n]) > eps)  // P는 hedge 왼쪽?
+                        {
+                            ++wn;
+                        }
+                    }
+                }
+                else
+                {
+                    if (points[(i + 1) % points.Count].Y <= P.Y + eps) // 아래 방향 crossing
+                    {
+                        if (GetPointRelationToVectorAB(P, points[i], points[(i + 1) % n]) < -eps)  // 오른쪽?
+                        {
+                            --wn;
+                        }
+                    }
+                }
+            }
+            return wn != 0;
+        }
+
+        //public static bool PointInPolygon(List<Vector2f> poly, Vector2f pID, float eps = MathUtil.ZeroTolerance)
+        //{
+        //    int nID = poly.Continuity();
+
+        //    poly.Add(new Vector2f { X = poly[0].X, Y = poly[0].Y });
+        //    Vector2f[] v = poly.ToBuffer();
+
+        //    int wn = 0;    // the winding number counter
+
+        //    // loop through all halfedgeSet of the polygon
+        //    for (int i = 0; i < nID; i++)
+        //    {   // hedge v0Id V[i] to V[i+1]
+        //        if (v[i].X <= pID.X)
+        //        {         // start y <= P.y
+        //            if (v[i + 1].X > pID.X)      // an upward crossing
+        //                if (isLeft(v[i], v[i + 1], pID) > 0)  // P left of hedge
+        //                    ++wn;            // have a valid up intersect
+        //        }
+        //        else
+        //        {                       // start y > P.y (no test needed)
+        //            if (v[i + 1].X <= pID.X)     // a downward crossing
+        //                if (isLeft(v[i], v[i + 1], pID) < 0)  // P right of hedge
+        //                    --wn;            // have a valid down intersect
+        //        }
+        //    }
+        //    if (wn != 0)
+        //        return true;
+        //    else
+        //        return false;
+
+        //}
+    }
+}

@@ -1,0 +1,110 @@
+﻿using IGX.ViewControl.Buffer.Common;
+using OpenTK.Graphics.OpenGL4;
+using System;
+using System.Runtime.CompilerServices;
+
+namespace IGX.ViewControl.Buffer
+{
+    public class UniformBuffer<T> : MutableBuffer<T> where T : struct
+    {
+        private readonly object _bindLock = new();
+
+        public UniformBuffer(ReadOnlySpan<T> data, BufferUsageHint usageHint, bool keepCpuData = false)
+            : base(data.ToArray(), BufferTarget.UniformBuffer, usageHint, keepCpuData)
+        {
+            if (!IsContextLikelyActive())
+            {
+                throw new InvalidOperationException("Cannot create UniformBuffer without an active OpenGL context.");
+            }
+            try
+            {
+                if (!data.IsEmpty)
+                {
+                    SetData(data);
+                    CheckGLError();
+                }
+            }
+            catch (Exception ex)
+            {
+                throw new InvalidOperationException("Failed to initialize UniformBuffer.", ex);
+            }
+        }
+
+        public void BindBase(int bindingIndex)
+        {
+            if (IsDisposed) throw new ObjectDisposedException(nameof(UniformBuffer<T>));
+            if (!IsContextLikelyActive())
+            {
+                throw new InvalidOperationException("Cannot bind UniformBuffer without an active OpenGL context.");
+            }
+            if (bindingIndex < 0)
+            {
+                throw new ArgumentOutOfRangeException(nameof(bindingIndex), "Binding index must be non-negative.");
+            }
+
+            lock (_bindLock)
+            {
+                GL.BindBufferBase(BufferRangeTarget.UniformBuffer, bindingIndex, Handle);
+                CheckGLError();
+            }
+        }
+
+        public void UpdateUniforms(int startIndex, ReadOnlySpan<T> newData)
+        {
+            if (IsDisposed) throw new ObjectDisposedException(nameof(UniformBuffer<T>));
+            if (startIndex < 0 || newData.Length < 0 || startIndex + newData.Length > Count)
+            {
+                throw new ArgumentOutOfRangeException(nameof(startIndex), "Uniform data range is out of bounds.");
+            }
+            if (newData.IsEmpty) return;
+
+            if (!IsContextLikelyActive())
+            {
+                throw new InvalidOperationException("Cannot update uniforms without an active OpenGL context.");
+            }
+
+            var cpuData = CpuData;
+            if (cpuData.IsEmpty && keepCpuData)
+            {
+                throw new InvalidOperationException("CPU _instancedBuffer is not maintained.");
+            }
+
+            if (!cpuData.IsEmpty)
+            {
+                newData.CopyTo(cpuData.Slice(startIndex, newData.Length));
+            }
+
+            try
+            {
+                UpdateData(newData, (nint)(startIndex * Unsafe.SizeOf<T>()));
+                CheckGLError();
+            }
+            catch (Exception ex)
+            {
+                throw new InvalidOperationException("Failed to update uniform _instancedBuffer data.", ex);
+            }
+        }
+
+        private static bool IsContextLikelyActive()
+        {
+            try
+            {
+                GL.GetError();
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static void CheckGLError()
+        {
+            var error = GL.GetError();
+            if (error != ErrorCode.NoError)
+            {
+                throw new InvalidOperationException($"OpenGL error: {error}");
+            }
+        }
+    }
+}

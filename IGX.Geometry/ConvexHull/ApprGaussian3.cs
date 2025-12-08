@@ -1,0 +1,176 @@
+﻿using System;
+using System.Linq;
+using IGX.Geometry.Common;
+using MathNet.Numerics.LinearAlgebra;
+using OpenTK.Mathematics;
+
+namespace IGX.Geometry.ConvexHull
+{
+    // Vector3를 사용하는 ApprQuery의 구체적인 구현
+    public class ApprGaussian3 : ApprQuery<Vector3, OOBB3>
+    {
+        // Fit 메서드 구현
+        public override void Fit(Vector3[] points)
+        {
+            ComputeMeanAndCovariance(points); // 평균과 공분산 행렬 계산
+        }
+
+        // Vector3 포인트 배열로부터 평균 벡터를 계산
+        protected override Vector<double> ComputeMean(Vector3[] points)
+        {
+            float meanX = points.Average(p => p.X); // X축 평균
+            float meanY = points.Average(p => p.Y); // Y축 평균
+            float meanZ = points.Average(p => p.Z); // Z축 평균
+            return Vector<double>.Build.DenseOfArray(new double[] { meanX, meanY, meanZ });
+        }
+
+        // Vector3 포인트 배열로부터 공분산 행렬을 계산
+        protected override Matrix<double> ComputeCovarianceMatrix(Vector3[] points, Vector<double> mean)
+        {
+            // null 검증
+            if (mean == null)
+            {
+                throw new ArgumentNullException(nameof(mean), "MeanPoint vector cannot be null.");
+            }
+
+            Matrix<double> covarianceMatrix = Matrix<double>.Build.Dense(3, 3);
+
+            // 각 포인트에 대해 공분산 계산
+            foreach (Vector3 point in points)
+            {
+                Vector<double> centeredPoint = Vector<double>.Build.DenseOfArray(new double[] { point.X, point.Y, point.Z }) - mean;
+                covarianceMatrix[0, 0] += centeredPoint[0] * centeredPoint[0];
+                covarianceMatrix[0, 1] += centeredPoint[0] * centeredPoint[1];
+                covarianceMatrix[0, 2] += centeredPoint[0] * centeredPoint[2];
+                covarianceMatrix[1, 0] += centeredPoint[1] * centeredPoint[0];
+                covarianceMatrix[1, 1] += centeredPoint[1] * centeredPoint[1];
+                covarianceMatrix[1, 2] += centeredPoint[1] * centeredPoint[2];
+                covarianceMatrix[2, 0] += centeredPoint[2] * centeredPoint[0];
+                covarianceMatrix[2, 1] += centeredPoint[2] * centeredPoint[1];
+                covarianceMatrix[2, 2] += centeredPoint[2] * centeredPoint[2];
+            }
+
+            covarianceMatrix /= points.Length - 1; // 공분산 행렬 정규화
+            return covarianceMatrix;
+        }
+
+        // 공분산 행렬을 기반으로 도형 형태를 결정
+        public ShapeType GetShape()
+        {
+            MathNet.Numerics.LinearAlgebra.Factorization.Evd<double> eigen = CovarianceMatrix.Evd(); // 공분산 행렬의 고유값 분해
+            double[] eigenValues = eigen.EigenValues.Select(e => e.Magnitude).ToArray(); // 고유값 배열
+            const double tolerance = 1e-5; // 오차 허용 범위
+
+            if (eigenValues.Length < 3)
+            {
+                return ShapeType.Dimension0; // 고유값이 3개 미만일 경우 점으로 간주
+            }
+
+            double maxEval = eigenValues.Max(); // 최대 고유값
+            double minEval = eigenValues.Min(); // 최소 고유값
+
+            // 고유값 차이를 이용해 차원 판단
+            if (Math.Abs(maxEval - minEval) < tolerance)
+            {
+                return ShapeType.Dimension0; // 모든 고유값이 비슷하면 점
+            }
+
+            int distinctEigenValues = eigenValues.Distinct().Count(); // 고유값의 고유 값들
+
+            if (distinctEigenValues == 1)
+            {
+                return ShapeType.Dimension0; // 고유값이 하나인 경우 점
+            }
+            else if (distinctEigenValues == 2)
+            {
+                return ShapeType.Dimension1; // 고유값이 두 개인 경우 선
+            }
+            else if (distinctEigenValues == 3)
+            {
+                return ShapeType.Dimension2; // 고유값이 세 개인 경우 평면
+            }
+            else
+            {
+                return ShapeType.Dimension3; // 그 외의 경우 부피
+            }
+        }
+        public override OOBB3 ComputeBoundingBox()
+        {
+            MathNet.Numerics.LinearAlgebra.Factorization.Evd<double> eigen = CovarianceMatrix.Evd(); // 공분산 행렬의 고유값 분해
+            double[] eigenValues = eigen.EigenValues.Select(e => e.Magnitude).ToArray(); // 고유값 배열
+            Matrix<double> eigenVectors = eigen.EigenVectors; // 고유벡터
+
+            // 고유값에 따라 정렬된 순서를 찾기
+            double[] sortedEigenValues = eigenValues.OrderBy(val => val).ToArray(); // 오름차순 정렬
+
+            // 고유벡터를 OpenTK.Vector3로 변환
+            Vector3 aX = eigenVectors.Column(0).ToVector3();
+            Vector3 aY = eigenVectors.Column(1).ToVector3();
+            Vector3 aZ = eigenVectors.Column(2).ToVector3();
+
+            // 고유값을 기준으로 축의 크기 계산 (작은 값부터 큰 값까지)
+            float[] extents = new float[]
+            {
+                (float)Math.Sqrt(sortedEigenValues[0]),  // 가장 작은 고유값에 해당하는 크기
+                (float)Math.Sqrt(sortedEigenValues[1]),  // 두 번째 고유값
+                (float)Math.Sqrt(sortedEigenValues[2])   // 가장 큰 고유값
+            };
+
+            Vector3[] axes = new Vector3[] { aX, aY, aZ };
+
+            // 축 크기에 따라 순서 정렬 (작은 크기 -> 큰 크기)
+            int[] sortedIndices = extents
+                .Select((value, index) => new { value, index })
+                .OrderBy(x => x.value)
+                .Select(x => x.index)
+                .ToArray();
+
+            // 정렬된 축 순서대로 축과 크기 설정
+            Vector3[] sortedAxes = new Vector3[] { axes[sortedIndices[0]], axes[sortedIndices[1]], axes[sortedIndices[2]] };
+            float[] sortedExtents = new float[] { extents[sortedIndices[0]], extents[sortedIndices[1]], extents[sortedIndices[2]] };
+
+            // 최소 크기의 축을 Z축으로 설정 (Z축이 최소 크기 축이 되도록 보장)
+            Vector3 tempAxis = sortedAxes[2];
+            float tempExtent = sortedExtents[2];
+
+            sortedAxes[2] = sortedAxes[0];
+            sortedExtents[2] = sortedExtents[0];
+
+            sortedAxes[0] = tempAxis;
+            sortedExtents[0] = tempExtent;
+
+            // 오른손 좌표계를 고려하여 방향을 조정
+            if (Vector3.Dot(Vector3.Cross(sortedAxes[0], sortedAxes[1]), sortedAxes[2]) < 0)
+            {
+                sortedAxes[2] = -sortedAxes[2];
+                //sortedExtents[2] = -sortedExtents[2];
+            }
+
+            OOBB3 Oobb3 = new()
+            {
+                center = Mean.ToVector3(),
+                axisX = sortedAxes[0], // X축
+                axisY = sortedAxes[1], // Y축
+                axisZ = sortedAxes[2], // Z축
+                extent = new Vector3(sortedExtents[0], sortedExtents[1], sortedExtents[2]) // 크기
+            };
+
+            return Oobb3;
+        }
+        public override Vector3 ToVector(Vector<double> vec)
+        {
+            return vec.Count != 2
+                ? throw new ArgumentException("Vector must have exactly 3 elements to convert to Vector2.")
+                : new Vector3((float)vec[0], (float)vec[1], (float)vec[2]);
+        }
+    }
+
+    // 도형 유형을 정의하는 열거형
+    public enum ShapeType
+    {
+        Dimension0, // 점
+        Dimension1, // 선
+        Dimension2, // 평면
+        Dimension3  // 부피
+    }
+}

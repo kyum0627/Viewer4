@@ -1,0 +1,28 @@
+﻿namespace IGX.ViewControl.Buffer.Common
+{
+    /// <summary>
+    /// RAII(Resource Acquisition Is Initialization) 패턴을 구현하는 IDisposable 클래스.
+    /// 'using' 블록과 함께 사용되어 OpenGL 상태를 안전하게 저장하고 복원.
+    /// 예외 발생 시에도 반드시 Dispose()가 호출되므로 상태 누락을 방지.
+    /// </summary>
+    public class GLStateScope : IDisposable
+    {
+        private readonly GLStateSnapshot _previousState;
+
+        /// <summary>
+        /// GLStateScope의 새 인스턴스를 초기화하고 현재 OpenGL 상태를 캡처.
+        /// </summary>
+        public GLStateScope()
+        {
+            _previousState = GLStateSnapshot.Capture();
+        }
+
+        /// <summary>
+        /// using 블록 종료 시 호출되며, 캡처된 이전 OpenGL 상태를 복원.
+        /// </summary>
+        public void Dispose()
+        {
+            _previousState.Apply();
+        }
+    }
+}

@@ -1,0 +1,44 @@
+﻿using Newtonsoft.Json;
+using OpenTK.Mathematics;
+
+namespace IGX.Loader.AMFileLoader
+{
+    public class Vector3Converter : JsonConverter<Vector3>
+    {
+        public override void WriteJson(JsonWriter writer, Vector3 value, JsonSerializer serializer)
+        {
+            writer.WriteStartObject();
+            writer.WritePropertyName("X");
+            writer.WriteValue(value.X);
+            writer.WritePropertyName("Y");
+            writer.WriteValue(value.Y);
+            writer.WritePropertyName("Z");
+            writer.WriteValue(value.Z);
+            writer.WriteEndObject();
+        }
+
+        public override Vector3 ReadJson(JsonReader reader, Type objectType, Vector3 existingValue, bool hasExistingValue, JsonSerializer serializer)
+        {
+            float x = 0, y = 0, z = 0;
+            while (reader.Read())
+            {
+                if (reader.TokenType == JsonToken.PropertyName)
+                {
+                    string propName = (string)reader.Value!;
+                    reader.Read();
+                    switch (propName)
+                    {
+                        case "X": x = Convert.ToSingle(reader.Value); break;
+                        case "Y": y = Convert.ToSingle(reader.Value); break;
+                        case "Z": z = Convert.ToSingle(reader.Value); break;
+                    }
+                }
+                else if (reader.TokenType == JsonToken.EndObject)
+                {
+                    break;
+                }
+            }
+            return new Vector3(x, y, z);
+        }
+    }
+}

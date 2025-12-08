@@ -1,0 +1,55 @@
+﻿using System;
+using IGX.Geometry.Common;
+using IGX.Geometry.ConvexHull;
+
+namespace IGX.Geometry.Intersect
+{
+    public class IntersectPlane3Box3
+    {
+        Plane3f mPlane;
+        OOBB3 mBox;
+        public IntersectionResult3 result;
+
+        public IntersectPlane3Box3(Plane3f p, OOBB3 b)
+        {
+            mPlane = p;
+            mBox = b;
+        }
+
+        public bool Test()
+        {
+            float[] tmp = new float[3]
+            {
+                //mBox.extent[0] * mPlane.norID.Dot(mBox.axisX),
+                //mBox.extent[1] * mPlane.norID.Dot(mBox.axisY),
+                //mBox.extent[2] * mPlane.norID.Dot(mBox.axisZ)
+                mBox.extent[0] * mPlane.normal.Dot(mBox.axisX),
+                mBox.extent[1] * mPlane.normal.Dot(mBox.axisY),
+                mBox.extent[2] * mPlane.normal.Dot(mBox.axisZ)
+            };
+
+            float radius = Math.Abs(tmp[0]) + Math.Abs(tmp[1]) + Math.Abs(tmp[2]);
+
+            float signedDistance = mPlane.DistanceTo(mBox.center);
+            return Math.Abs(signedDistance) <= radius;
+        }
+
+        public bool BoxIsCulled()
+        {
+            float[] tmp = new float[3]
+            {
+                //mBox.extent[0] * Vector3.Dot(mPlane.norID, mBox.axisX),
+                //mBox.extent[1] * Vector3.Dot(mPlane.norID, mBox.axisY),
+                //mBox.extent[2] * Vector3.Dot(mPlane.norID, mBox.axisZ)
+                mBox.extent[0] * mPlane.normal.Dot(mBox.axisX),
+                mBox.extent[1] * mPlane.normal.Dot(mBox.axisY),
+                mBox.extent[2] * mPlane.normal.Dot(mBox.axisZ)
+            };
+
+            float radius = Math.Abs(tmp[0]) + Math.Abs(tmp[1]) + Math.Abs(tmp[2]);
+
+            float signedDistance = mPlane.DistanceTo(mBox.center);
+            return Math.Abs(signedDistance) <= -radius;
+        }
+    }
+}

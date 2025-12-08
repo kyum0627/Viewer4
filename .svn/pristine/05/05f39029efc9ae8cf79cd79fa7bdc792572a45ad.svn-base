@@ -1,0 +1,102 @@
+﻿using IGX.Geometry.Common;
+using OpenTK.Mathematics;
+using System;
+using System.Collections.Generic;
+using System.Linq;
+
+namespace IGX.Geometry.DataStructure.IgxMesh
+{
+    public class SurfaceMesh
+    {
+        public List<int> Triangles;
+        public Vector3 Centroid;
+        public Vector3 Normal;
+        public float Area;
+        public List<List<int>> BoundaryLoops;
+        public bool IsFlat;
+        public Vertex Median;
+        public SurfaceMesh(List<int> triangles)
+        {
+            Triangles = triangles;
+            Centroid = Vector3.Zero;
+            Normal = Vector3.Zero;
+            Area = 0.0f;
+            BoundaryLoops = new List<List<int>>();
+            IsFlat = true;
+            Median = new Vertex();
+        }
+        public IEnumerable<Vertex> GetSurfaceVertices(IgxMesh mesh)
+        {
+            var vertices = new List<Vertex>();
+            foreach (var t in Triangles)
+            {
+                vertices.AddRange(GetTriangleVertices(mesh, t));
+            }
+            return vertices.Distinct();
+        }
+        public List<Vertex> GetTriangleVertices(IgxMesh mesh, int t)
+        {
+            List<Vertex> vertices = new List<Vertex>();
+
+            var v0 = mesh.UniqueVertices[mesh.Triangles[t].V0]; vertices.Add(v0);
+            var v1 = mesh.UniqueVertices[mesh.Triangles[t].V1]; vertices.Add(v1);
+            var v2 = mesh.UniqueVertices[mesh.Triangles[t].V2]; vertices.Add(v2);
+            return vertices;
+        }
+        public IEnumerable<Vector3> GetSurfaceNormals(IgxMesh mesh)
+        {
+            return GetSurfaceVertices(mesh).Select(v => v.Normal).Distinct();
+        }
+        public int GetSurfaceNormalsCount(IgxMesh mesh)
+        {
+            int count = GetSurfaceNormals(mesh).Count();
+            if (count > 1) IsFlat = false;
+            return count;
+        }
+        public List<List<Vertex>> GetBoundaryVertices(IgxMesh mesh)
+        {
+            return BoundaryLoops
+                .Select(loop => loop.Select(v => mesh.UniqueVertices[v]).ToList())
+                .ToList();
+        }
+        public void FindGeometryCenter(IgxMesh mesh)
+        {
+            IEnumerable<Vertex> loopvertices = GetSurfaceVertices(mesh);
+            Vector3[] normals = loopvertices.Select(v => v.Normal).Distinct().ToArray();
+
+            float dist = float.MaxValue; // SurfaceMesh COG와의 최소 거리 제곱을 저장할 변수 초기화.
+            float newdist; // 새로운 삼각형 COG와의 거리 제곱을 임시 저장할 변수.
+
+            foreach (int p in Triangles)
+            {
+                newdist = (mesh.Triangles[p].Centroid - Centroid).LengthSquared;
+                if (newdist < dist)
+                { // 만약 이 거리가 지금까지 찾은 최소 거리보다 작다면, 이 삼각형이 가장 가까운 삼각형
+                    dist = newdist; // 최소 거리 업데이트.
+                    Median.Position = mesh.Triangles[p].Centroid; // Median의 위치를 이 삼각형의 무게중심으로 설정.
+                    Median.Normal = mesh.Triangles[p].Normal; // Median의 노말을 이 삼각형의 노말로 설정.
+                }
+            }
+        }
+        public void RecalculateSurfaceMetrics(IgxMesh mesh)
+        {
+            Vector3 surfaceWeightedCentroidSum = Vector3.Zero;
+            Vector3 surfaceNormalSum = Vector3.Zero;
+            float surfaceAreaSum = 0.0f;
+            foreach (var triangleIndex in Triangles)
+            {
+                var triangle = mesh.Triangles[triangleIndex];
+                surfaceWeightedCentroidSum += triangle.Centroid * triangle.Area;
+                surfaceNormalSum += triangle.Normal;
+                surfaceAreaSum += triangle.Area;
+            }
+            if (surfaceAreaSum > 1e-6f)
+            {
+                Centroid = surfaceWeightedCentroidSum / surfaceAreaSum;
+                Normal = surfaceNormalSum.Normalized();
+                Area = surfaceAreaSum;
+            }
+            FindGeometryCenter(mesh);
+        }
+    }
+}
